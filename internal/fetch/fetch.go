@@ -1,5 +1,6 @@
 // Package fetch gets one object for ingest from an ordered list of sources
-// (the other region's seapin, the local kubo, Pinata) and stores it when the
+// (the other region's seapin, the old gateway's caches during the migration,
+// the IPFS gateway sidecar, Pinata) and stores it when the
 // content policy allows. Deadlines measure progress rather than total time:
 // time to first byte, then stalls, a minimum rate and a hard ceiling (PLAN §1
 // Ingest scheduling).
@@ -31,7 +32,7 @@ type Source struct {
 	BaseURL  string
 	Header   http.Header // e.g. the peer's bearer token, Pinata's gateway token
 	SlowOnly bool        // only tried outside the fast lane (Pinata)
-	MissOK   bool        // 404 means "not here, ask the next source" (the peer serves cached objects only)
+	MissOK   bool        // 404 or 412 means "not here, ask the next source" (cache-only sources: the peer, legacy)
 }
 
 type Store interface {
@@ -181,12 +182,13 @@ func (f *Fetcher) fromSource(parent context.Context, src Source, root, subpath s
 
 	switch code := resp.StatusCode; {
 	case code == http.StatusOK:
-	case code == http.StatusNotFound && src.MissOK:
+	case (code == http.StatusNotFound || code == http.StatusPreconditionFailed) && src.MissOK:
 		return Result{}, errNotHere
 	case code == http.StatusBadRequest || code == http.StatusGone:
 		return Result{}, fmt.Errorf("%w: http %d", ErrPermanent, code)
 	case code == http.StatusNotFound:
-		// kubo answers 404 both for a path that does not exist in a resolved
+		// The sidecar (rainbow; kubo answers the same, both are boxo gateways)
+		// answers 404 both for a path that does not exist in a resolved
 		// directory (final) and for a block it cannot get (may appear later).
 		msg, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
 		if bytes.Contains(msg, []byte("no link named")) {
@@ -261,7 +263,8 @@ func objectURL(base, root, subpath string) string {
 }
 
 // leafCID is the CID the request resolved to: the last X-Ipfs-Roots entry
-// (kubo), else a CID ETag (kubo, seapin), else the root when there is no path.
+// (boxo gateways: rainbow, kubo), else a CID ETag (boxo, seapin), else the
+// root when there is no path.
 func leafCID(h http.Header, root, subpath string) (string, error) {
 	if roots := h.Get("X-Ipfs-Roots"); roots != "" {
 		parts := strings.Split(roots, ",")

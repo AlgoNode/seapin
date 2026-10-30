@@ -7,9 +7,10 @@
 #   docker compose up -d --build
 #   docker compose run --rm seapin-tool seed <cid> /seed/<file>   # file in ./dev/seed
 #
-# Also: RabbitMQ (AMQP 127.0.0.1:21672, management :21673), kubo (gateway :21880,
-# offline: it serves only what `ipfs add` put in it), seapin-ingest (metrics and
-# health :21091) and serve's internal listener (:21092, bearer INTERNAL_TOKEN).
+# Also: RabbitMQ (AMQP 127.0.0.1:21672, management :21673), an offline kubo as
+# the dev content source (gateway :21880: it serves only what `ipfs add` put in
+# it; production's sidecar is rainbow, deploy/rainbow), seapin-ingest (metrics
+# and health :21091) and serve's internal listener (:21092, bearer INTERNAL_TOKEN).
 name: seapin-dev
 
 x-common: &common
@@ -145,9 +146,9 @@ services:
       timeout: 10s
       retries: 12
 
-  # Dev kubo runs offline: it serves only what was added locally, so tests are
-  # deterministic and the workstation joins no network. Production drops
-  # --offline and keeps the default swarm addresses (deploy/kubo/001-seapin.sh).
+  # Dev content source only: an offline kubo serves exactly what the tests
+  # `ipfs add`, so they are deterministic and the workstation joins no network.
+  # Production uses rainbow as the sidecar (D1, deploy/rainbow).
   kubo:
     <<: *common
     image: ipfs/kubo:v0.43.1
@@ -163,7 +164,7 @@ services:
       KUBO_STORAGE_MAX: 5GB
     volumes:
       - ./dev/kubo:/data/ipfs
-      - ./deploy/kubo/001-seapin.sh:/container-init.d/001-seapin.sh:ro
+      - ./deploy/dev/kubo-001-seapin.sh:/container-init.d/001-seapin.sh:ro
       - ./dev/seed:/seed:ro
     tmpfs: [/tmp]
     healthcheck:
@@ -184,7 +185,7 @@ services:
       S3_SECRET_KEY: ${INGEST_S3_SECRET_KEY:?}
       REGION: dev
       RMQ_URL: amqp://seapin:${RMQ_PASSWORD:?}@127.0.0.1:21672/
-      KUBO_URL: http://127.0.0.1:21880
+      SIDECAR_URL: http://127.0.0.1:21880
       INGEST_ADDR: 127.0.0.1:21091
     depends_on:
       seapin-migrate: {condition: service_completed_successfully}

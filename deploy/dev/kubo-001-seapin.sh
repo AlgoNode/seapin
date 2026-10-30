@@ -1,6 +1,7 @@
 #!/bin/sh
-# seapin's fetch sidecar (PLAN §1): kubo as a fetch-only gateway. Runs from
-# /container-init.d before every daemon start, so the config is always ours.
+# Dev only: kubo as seapin's offline test-content source and stand-in sidecar
+# (production runs rainbow, deploy/rainbow). Runs from /container-init.d
+# before every daemon start, so the config is always ours.
 # - gateway and RPC API on loopback (KUBO_GATEWAY_PORT, KUBO_API_PORT)
 # - no providing, DHT client only: we fetch, we do not serve the network
 # - a small blockstore with GC: seapin's bucket is the cache, not kubo

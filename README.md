@@ -6,7 +6,7 @@ cached gets a 404, unless openresty marks its referer as whitelisted: then seapi
 it and serves it. Design, decisions and milestones: [PLAN.md](PLAN.md).
 
 **Status:**
-- M1 (the read path, `seapin serve`), M2 (ingest: queue consumer, fetch lanes, kubo sidecar, JSON link following) and
+- M1 (the read path, `seapin serve`), M2 (ingest: queue consumer, fetch lanes, rainbow sidecar (D1), read-through, JSON link following) and
   M3 (the scanner `seapin-scan`, replacing algoipfssvc) are built and tested on the dev stack.
 - M3 has had its first mainnet run (24 of 26 refs identical to `x_asset_meta`, 0 different; PLAN §3).
 - Deployment (M4–M6) is next.
@@ -47,12 +47,13 @@ internal/catalog    Postgres catalog + embedded migrations (internal/catalog/mig
 internal/serve      HTTP handler, ranged object reader, in-memory takedown list, internal listener
 internal/contract   wire format v1: refs and takedowns (exchange "seapin"), object events ("seapin.events")
 internal/arcmeta    IPFS references in ASA URLs (ARC-3 {id}, ARC-19 templates), ARC-69 notes, links in JSON
-internal/fetch      one object from peer → kubo → Pinata, with progress deadlines, policy and size cap
+internal/fetch      one object from peer → legacy → sidecar → Pinata, with progress deadlines, policy and size cap
 internal/ingest     intake (queue → catalog), per-lane scheduler, events
 internal/scan       scanner: block events (inner txns), asset state (newest first), publisher confirms, meta writer
 internal/pgmigrate  embedded SQL migrations (catalog, scanner)
 internal/config     environment
-deploy/kubo         kubo container-init script: fetch-only, loopback, GC'd
+deploy/rainbow      the rainbow sidecar's production flags (D1)
+deploy/dev          dev-only: RabbitMQ config, kubo init (offline test-content source), x_asset_meta table
 ```
 
 ## Dev stack
@@ -89,7 +90,8 @@ the original chunking, so for those the operator vouches. S3 identities:
 | `DEMAND_HEADER`, `DEMAND_WAIT`, `DEMAND_MAX_WAITERS` | `X-Seapin-Whitelisted`, 20s, 256 | read-through for whitelisted referers |
 | `INTERNAL_ADDR`, `INTERNAL_TOKEN` | off | `serve`'s internal listener (`/internal/ipfs/`, `/internal/assets/`); token ≥ 32 chars |
 | `REGION`, `RMQ_URL` | required for `ingest` | consumes queue `seapin.<REGION>` |
-| `KUBO_URL` | `http://127.0.0.1:8080` | fetch sidecar gateway |
+| `SIDECAR_URL` | `http://127.0.0.1:8090` | IPFS gateway sidecar: rainbow (D1, `deploy/rainbow`) |
+| `LEGACY_URL` | off | old gateway caches, asked with `only-if-cached` before the sidecar (migration, M4–M6) |
 | `PEER_URL` + `PEER_TOKEN`, `PINATA_URL` + `PINATA_TOKEN` | off | other region's internal listener; Pinata (slow lanes only) |
 | `FAST_SLOTS` / `SLOW_SLOTS` / `BACKFILL_SLOTS` / `DEMAND_SLOTS` | 48 / 16 / 32 / 32 | workers per lane |
 | `FAST_TTFB` / `SLOW_TTFB` / `BACKFILL_TTFB` / `BACKFILL_RETRY_TTFB` / `DEMAND_TTFB` | 10s / 120s / 10s / 120s / 10s | first-byte deadlines |

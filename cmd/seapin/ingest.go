@@ -43,7 +43,15 @@ func runIngest(ctx context.Context, log *slog.Logger) error {
 			Header: http.Header{"Authorization": {"Bearer " + ing.PeerToken}},
 		})
 	}
-	sources = append(sources, fetch.Source{Name: "kubo", BaseURL: ing.KuboURL})
+	if ing.LegacyURL != "" {
+		// The old gateway's caches hold most historical content the network
+		// no longer serves (M0 spike); only-if-cached keeps a miss cheap.
+		sources = append(sources, fetch.Source{
+			Name: "legacy", BaseURL: ing.LegacyURL, MissOK: true,
+			Header: http.Header{"Cache-Control": {"only-if-cached"}},
+		})
+	}
+	sources = append(sources, fetch.Source{Name: "sidecar", BaseURL: ing.SidecarURL})
 	if ing.PinataURL != "" {
 		sources = append(sources, fetch.Source{
 			Name: "pinata", BaseURL: ing.PinataURL, SlowOnly: true,

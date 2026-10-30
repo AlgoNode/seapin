@@ -43,7 +43,8 @@ type Ingest struct {
 	QueueMaxLen int64
 	Prefetch    int
 	Addr        string // /health and /metrics
-	KuboURL     string
+	SidecarURL  string // IPFS gateway sidecar (rainbow, D1)
+	LegacyURL   string // old gateway caches, only-if-cached; migration only (M4–M6)
 	PeerURL     string // the other region's internal listener; optional
 	PeerToken   string
 	PinataURL   string // optional last source, slow lanes only
@@ -67,7 +68,8 @@ func LoadIngest() (Config, Ingest, error) {
 		QueueMaxLen: int64(p.int("QUEUE_MAX_LENGTH", 10_000_000)),
 		Prefetch:    p.int("PREFETCH", 256),
 		Addr:        envOr("INGEST_ADDR", "127.0.0.1:8091"),
-		KuboURL:     envOr("KUBO_URL", "http://127.0.0.1:8080"),
+		SidecarURL:  envOr("SIDECAR_URL", "http://127.0.0.1:8090"),
+		LegacyURL:   os.Getenv("LEGACY_URL"),
 		PeerURL:     os.Getenv("PEER_URL"),
 		PeerToken:   os.Getenv("PEER_TOKEN"),
 		PinataURL:   os.Getenv("PINATA_URL"),

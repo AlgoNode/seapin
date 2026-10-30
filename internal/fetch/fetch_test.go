@@ -236,3 +236,31 @@ func TestFetchFailures(t *testing.T) {
 		t.Errorf("path without a leaf CID: %v", err)
 	}
 }
+
+func TestFetchLegacyOnlyIfCached(t *testing.T) {
+	var sawHeader atomic.Value
+	legacyHas := atomic.Bool{}
+	legacy := serve(t, func(w http.ResponseWriter, r *http.Request) {
+		sawHeader.Store(r.Header.Get("Cache-Control"))
+		if !legacyHas.Load() {
+			http.Error(w, "not in cache", http.StatusPreconditionFailed)
+			return
+		}
+		file(png, leaf)(w, r)
+	})
+	sidecar := serve(t, file(png, leaf))
+	srcs := []Source{
+		{Name: "legacy", BaseURL: legacy.URL, MissOK: true, Header: http.Header{"Cache-Control": {"only-if-cached"}}},
+		{Name: "sidecar", BaseURL: sidecar.URL},
+	}
+	f, _ := newFetcher(srcs...)
+	res, err := f.Fetch(context.Background(), leaf, "", time.Second, false)
+	if err != nil || res.Source != "sidecar" || sawHeader.Load() != "only-if-cached" {
+		t.Errorf("legacy miss: %+v %v, header %v", res, err, sawHeader.Load())
+	}
+	legacyHas.Store(true)
+	f, _ = newFetcher(srcs...)
+	if res, err := f.Fetch(context.Background(), leaf, "", time.Second, false); err != nil || res.Source != "legacy" || sidecar.hits.Load() != 1 {
+		t.Errorf("legacy hit: %+v %v, sidecar hits %d", res, err, sidecar.hits.Load())
+	}
+}

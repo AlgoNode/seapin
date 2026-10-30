@@ -130,13 +130,15 @@ Found while building M1 (4.45, 2026-10-30):
 - **Only leaf objects are stored**, keyed by their own CID. A request for `<root>/<path>` resolves through the catalog
   (`aliases`) to the leaf CID. This dedups shared files and avoids file-vs-directory name clashes in the filer
   namespace.
-- **Fetch sidecar** (ingest only): kubo, pinned, fetch-only and non-caching in practice. Gateway on 127.0.0.1 only;
+- **Fetch sidecar** (ingest only, D1 decided 2026-10-30): **rainbow**, flags in `deploy/rainbow/README.md`. The
+  original kubo sketch follows for reference: kubo, pinned, fetch-only and non-caching in practice. Gateway on 127.0.0.1 only;
   `Routing.Type=autoclient` (DHT client, no DHT server); providing disabled (the config key depends on the pinned
   version); `--enable-gc` with a small `Datastore.StorageMax` (~50 GB) and a short `GCPeriod`; resource manager and
   connection manager capped. `ipfs/rainbow`, a stateless gateway with no persistent blockstore, fits "fetch-only"
   even better; compare the two in M0.
-- **Ingest fetch chain**: local S3 → peer region (internal endpoint over the tailnet, bearer token) → local kubo →
-  Pinata (until the M6 review, D7). Each CID is fetched once at a time (singleflight per CID), with
+- **Ingest fetch chain**: local S3 → peer region (internal endpoint over the tailnet, bearer token) → **legacy**
+  (the old gateway's caches, `Cache-Control: only-if-cached`, migration only; M0 found ~7 in 10 historical
+  objects nowhere else) → the rainbow sidecar → Pinata (until the M6 review, D7). Each CID is fetched once at a time (singleflight per CID), with
   concurrency and deadlines set per lane (see Ingest scheduling); Pinata is tried in the slow lane only. kubo verifies the blocks it fetches. The peer is our own
   infrastructure and is trusted, but its bytes are re-sniffed anyway.
 - **The serve path never touches IPFS** (D2). A local S3 hit is served. On a local miss, if the peer region has the
@@ -421,11 +423,22 @@ M1 and M3 can run in parallel once M0's contract is frozen; M3's `x_asset_meta` 
         tail (17.8 k CIDs requested once)
       - **Strict D2 would 404 about one in five requests that succeed today**, so D2 needs revisiting (§4). The
         98 k out-of-set CIDs are in `seapin-m0/apilog_out_cids.tsv` for M3's gap hunt. — 2026-10-30
-- [ ] Spike: kubo vs rainbow on ~1k real CIDs (success rate, p50/p95, RAM); pick the fetch sidecar (D1). Also
-      measure: the time-to-first-byte distribution of successful fetches (sets the fast-lane cutoff), the share of
-      dead CIDs in a historical sample (sizes the backfill), and the sidecar's concurrency ceiling (caps total slots).
-- [x] Freeze message contract v1: `internal/contract` (ref, takedown, object event) with validation and tests. — 2026-10-30
-- [ ] Settle D1 and D6 (§4).
+- [x] Fetch sidecar spike (operator: "test rainbow first - I hate kubo"). Setup: rainbow v1.24.1, outbound
+      only; 1,000 objects sampled from `x_asset_meta`; 32 parallel; 46 min.
+      - **recent 90 days: 95.0% fetched** (img 96.8%, json 93.3%), first byte p50 0.64 s / p90 1.77 s
+      - all-time: 28.0% (img 63.5%, json 10.9%)
+      - of all successes, 407/414 had the first byte within 10 s (the fast-lane cutoff holds); the rest within
+        120 s (the slow lane)
+      - rainbow peaked at 343 MiB RSS; it has the same `X-Ipfs-Roots`, ETag, "no link named" and `DirIndex-`
+        behaviour as kubo, so ingest needed no change
+      - **Why old content fails:** its provider records point at Filebase, whose trustless gateway answers 404, so
+        the content is gone from the network. 146 of 150 sampled all-time failures (97%) are still in the old
+        gateway's caches on ipfs-1/2.
+      - So roughly 7 in 10 historical objects survive only in our caches, which makes the M4 seed from ipfs-1/2
+        the most valuable migration step.
+      Data: scratchpad `spike/`. — 2026-10-30- [x] Freeze message contract v1: `internal/contract` (ref, takedown, object event) with validation and tests. — 2026-10-30
+- [x] D1 settled: rainbow (§4). — 2026-10-30
+- [ ] Settle D6 (§4).
 - [x] How the indexers get `x_asset_meta`: logical replication, publication `ledger_extras` on the etl ledgerdb
       → 5 subscriptions (euc, eud, usg2, usf, sgc). The etl GraphQL reads it directly. Other readers on etl: views
       `graphql.asset`/`asset_meta`/`nft_meta()`, `ch.asset(_live)`, `xv_asset_cids`, the public Grafana IPFS
@@ -567,8 +580,12 @@ Found while building M3:
 ### M4: EU region live, shadow traffic
 - [ ] VM with 3 TB NVMe (XFS); stacks per **nodely-deploy** (seaweed, postgres, kubo, seapin serve and ingest,
       openresty per D5); secrets in the vault and `.env` 0600; UFW; tailnet.
-- [ ] Seed from the existing ipfs-1/2 kubo repos (2.3–2.4 TB already local) through their peer listener, driven by
-      the M3 backfill. No IPFS network round trips for most objects.
+- [ ] Seed from the old caches on ipfs-1/2 (2.3–2.4 TB).
+      - On both hosts, add an internal openresty listener (VLAN/tailnet only) that passes
+        `Cache-Control: only-if-cached` to kubo and returns 412 on a miss.
+      - Point ingest's `LEGACY_URL` at it and run the M3 backfill.
+      - This is where most historical content comes from: the M0 spike found ~7 in 10 all-time objects are gone from
+        the network, and 97% of those are in these caches.
 - [ ] Zabbix (health, disk 70/85 %, queue depth, ingest errors, projected date for 8 TB); apilog onboarding; deploy
       record; registry deploy row.
 - [ ] Resize drill: grow the volume a little online, run `xfs_growfs`, confirm SeaweedFS reports more free slots
@@ -591,7 +608,9 @@ Exit: the catalog diff between regions stays under 0.1% of CIDs 24 h after the d
 - [ ] Geo steering with health checks (D6); referer whitelist carried over in openresty (D5); canary on a
       `*-nobunny` hostname first, then full traffic. The old gateway stays ready for a switch back for 2 weeks, but
       is not a fallback upstream (that would reopen D2).
-- [ ] Retire kubo, ipfs-cluster and the `static` worker on ipfs-1/2 (**nodely-decommission**).
+- [ ] Retire kubo, ipfs-cluster and the `static` worker on ipfs-1/2 (**nodely-decommission**), **only after the
+      legacy seed is verified**: both regions hold ≥ 99% of the objects `x_asset_meta` lists. Until then those caches
+      are the only copy of most historical content.
 - [ ] Pinata review (D7): keep it only if it delivered objects the IPFS network couldn't.
 - [ ] Runbook for going past 8 TB written down (a second volume as an extra `-dir`, or a second volume server).
 
@@ -610,6 +629,7 @@ Decided by the operator on 2026-10-30:
 | D4 | SVG | allowed, always served with CSP `sandbox` + `nosniff` | scripts inside an SVG cannot run |
 | D5 | Front proxy | keep openresty (whitelist, apilog `$flg`) | seapin listens on 127.0.0.1 only. openresty must **always set** `X-Seapin-Whitelisted` (`$allowed_referer` → `1`/`0`, overriding any client value) and `X-Seapin-Site` (referer host, or a name for UA-whitelisted apps such as Pera). Whether non-whitelisted referers keep today's 403 for cached content or get cached-only access is openresty's choice; seapin works either way |
 | D7 | Pinata | last ingest fetch source until M6, then review | its token moves to seapin's `.env`; rotation pending (§0) |
+| D1 | Fetch sidecar | **rainbow** v1.24.1 (operator preference, confirmed by the M0 spike: 95% of recent CIDs, first byte p50 0.64 s, 343 MiB) | flags in `deploy/rainbow/README.md`; kubo stays only as the dev stack's offline test-content source |
 | D9 | Where the new scanner lives | `cmd/seapin-scan` in this repo, sharing `cidkey`, `arcmeta` and the contract types | algoipfssvc is retired at M6 |
 | D10 | Discord new-asset notifications | dropped | they stop when algoipfssvc is retired |
 | L | Which JSON strings become child CIDs | any explicit IPFS link (`ipfs://`, `/ipfs/`, `*.ipfs.*`) anywhere in the JSON; ≤ 32 per JSON, ≤ 3 hops, 1 MiB parse limit; bare CIDs ignored | covers collection-specific layouts; the bounds and per-creator fairness contain hostile fan-out |
@@ -618,6 +638,5 @@ Still open (recommendation first):
 
 | # | decision | recommendation | why |
 |---|---|---|---|
-| D1 | Fetch sidecar | kubo pinned and GC'd, unless rainbow wins the M0 spike | kubo is proven here; rainbow is stateless by design |
 | D6 | Region steering | Cloudflare Load Balancer geo steering + `/health` monitors | failover without DNS TTL waits; check how it fits behind the current CDN (Bunny, see the `/bunny` check and `-nobunny` hosts) |
 | D8 | "Upload date" | block time of the first referencing txn (`first_seen_at`), plus `cached_at` | the chain time is what "uploaded" means for an ASA |
