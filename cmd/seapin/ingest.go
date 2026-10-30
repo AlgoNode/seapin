@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -43,11 +45,17 @@ func runIngest(ctx context.Context, log *slog.Logger) error {
 			Header: http.Header{"Authorization": {"Bearer " + ing.PeerToken}},
 		})
 	}
-	if ing.LegacyURL != "" {
-		// The old gateway's caches hold most historical content the network
-		// no longer serves (M0 spike); only-if-cached keeps a miss cheap.
+	// The old gateway's caches (one per host, each holding different objects)
+	// have most historical content the network no longer serves (M0 spike);
+	// only-if-cached keeps a miss cheap, so each is asked in turn.
+	legacy := strings.FieldsFunc(ing.LegacyURL, func(r rune) bool { return r == ',' })
+	for i, u := range legacy {
+		name := "legacy"
+		if len(legacy) > 1 {
+			name = fmt.Sprintf("legacy-%d", i+1)
+		}
 		sources = append(sources, fetch.Source{
-			Name: "legacy", BaseURL: ing.LegacyURL, MissOK: true,
+			Name: name, BaseURL: strings.TrimSpace(u), MissOK: true,
 			Header: http.Header{"Cache-Control": {"only-if-cached"}},
 		})
 	}

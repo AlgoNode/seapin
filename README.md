@@ -94,7 +94,7 @@ the original chunking, so for those the operator vouches. S3 identities:
 | `INTERNAL_ADDR`, `INTERNAL_TOKEN` | off | `serve`'s internal listener (`/internal/ipfs/`, `/internal/assets/`); token ≥ 32 chars |
 | `REGION`, `RMQ_URL` | required for `ingest` | consumes queue `seapin.<REGION>` |
 | `SIDECAR_URL` | `http://127.0.0.1:8090` | IPFS gateway sidecar: rainbow (D1, `deploy/rainbow`) |
-| `LEGACY_URL` | off | old gateway caches, asked with `only-if-cached` before the sidecar (migration, M4–M6) |
+| `LEGACY_URL` | off | old gateway caches, comma-separated, asked in order with `only-if-cached` before the sidecar (migration, M4–M6) |
 | `PEER_URL` + `PEER_TOKEN`, `PINATA_URL` + `PINATA_TOKEN` | off | other region's internal listener; Pinata (slow lanes only) |
 | `FAST_SLOTS` / `SLOW_SLOTS` / `BACKFILL_SLOTS` / `DEMAND_SLOTS` | 48 / 16 / 32 / 32 | workers per lane |
 | `FAST_TTFB` / `SLOW_TTFB` / `BACKFILL_TTFB` / `BACKFILL_RETRY_TTFB` / `DEMAND_TTFB` | 10s / 120s / 10s / 120s / 10s | first-byte deadlines |

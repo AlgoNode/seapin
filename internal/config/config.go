@@ -44,7 +44,7 @@ type Ingest struct {
 	Prefetch    int
 	Addr        string // /health and /metrics
 	SidecarURL  string // IPFS gateway sidecar (rainbow, D1)
-	LegacyURL   string // old gateway caches, only-if-cached; migration only (M4–M6)
+	LegacyURL   string // old gateway caches, comma-separated, only-if-cached; migration only (M4–M6)
 	PeerURL     string // the other region's internal listener; optional
 	PeerToken   string
 	PinataURL   string // optional last source, slow lanes only
