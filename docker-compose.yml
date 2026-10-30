@@ -1,32 +1,127 @@
+# seapin dev / reference stack: single-node SeaweedFS (S3 on 127.0.0.1:21833), the
+# Postgres catalog (127.0.0.1:21432) and `seapin serve` on http://127.0.0.1:21090/ipfs/<cid>.
+# Everything listens on loopback only; ports sit in 21xxx/31xxx to stay clear of
+# other local stacks. Fleet deployments get their own compose in M4.
+#
+#   ./scripts/dev-init.sh                  # once: .env (secrets, 0600) + dev/s3.json
+#   docker compose up -d --build
+#   docker compose run --rm seapin-tool seed <cid> /seed/<file>   # file in ./dev/seed
+name: seapin-dev
+
+x-common: &common
+  network_mode: host
+  restart: unless-stopped
+  read_only: true
+  cap_drop: [ALL]
+  security_opt: [no-new-privileges:true]
+  logging:
+    driver: json-file
+    options: {max-size: 10m, max-file: "3"}
+
+x-seapin-env: &seapin-env
+  LISTEN_ADDR: 127.0.0.1:21090
+  S3_ENDPOINT: 127.0.0.1:21833
+  S3_BUCKET: ipfs
+  PG_DSN: postgres://seapin:${PG_PASSWORD:?run scripts/dev-init.sh}@127.0.0.1:21432/seapin?sslmode=disable
+
 services:
-  minio:
-    image: minio/minio
-    command: server /data --console-address ":9001"
-    environment:
-      MINIO_ROOT_USER: minioadmin
-      MINIO_ROOT_PASSWORD: minioadmin
+  seaweedfs:
+    <<: *common
+    image: chrislusf/seaweedfs:4.45
+    container_name: seapin-dev-seaweedfs
+    user: "1000:1000"
+    mem_limit: 2g
+    # The image entrypoint injects -master.volumeSizeLimitMB=1024 for `server`;
+    # the later flag here wins. Production uses 30720 (PLAN §1). Dev defaults to
+    # 1024 because -volume.max=0 makes slots = free disk / volume size, and a new
+    # collection grows 7 volumes at once: 30 GB volumes need >210 GB free.
+    # Off by default-on extras: Iceberg and Lance listeners, and the master's
+    # usage telemetry to telemetry.seaweedfs.com.
+    command: >-
+      server -dir=/data -ip=127.0.0.1 -ip.bind=127.0.0.1
+      -master.port=21333 -master.port.grpc=31333
+      -master.volumeSizeLimitMB=${SEAWEED_VOLUME_SIZE_MB:-1024}
+      -master.telemetry=false
+      -volume.port=21080 -volume.port.grpc=31080 -volume.max=0
+      -volume.minFreeSpace=${SEAWEED_MIN_FREE:-5}
+      -filer -filer.port=21888 -filer.port.grpc=31888
+      -s3 -s3.port=21833 -s3.port.grpc=31833 -s3.config=/etc/seapin/s3.json
+      -s3.port.iceberg=0 -s3.port.lance=0
     volumes:
-      - minio-data:/data
+      - ./dev/seaweed:/data
+      - ./dev/s3.json:/etc/seapin/s3.json:ro
+    tmpfs: [/tmp]
+    # Healthy only when master, volume server, filer and S3 all answer: the
+    # master alone comes up first, and the S3 gateway (and reads) lag behind.
     healthcheck:
-      test: ["CMD", "mc", "ready", "local"]
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:21333/cluster/healthz && wget -qO- http://127.0.0.1:21080/healthz && wget -qO- http://127.0.0.1:21888/healthz && wget -qO- http://127.0.0.1:21833/healthz"]
       interval: 5s
-      timeout: 5s
-      retries: 5
+      timeout: 3s
+      retries: 20
+
+  postgres:
+    <<: *common
+    image: postgres:18.6
+    container_name: seapin-dev-postgres
+    user: "1000:1000"
+    mem_limit: 1g
+    command: ["postgres", "-c", "listen_addresses=127.0.0.1", "-c", "port=21432"]
+    environment:
+      POSTGRES_USER: seapin
+      POSTGRES_DB: seapin
+      POSTGRES_PASSWORD: ${PG_PASSWORD:?run scripts/dev-init.sh}
+    volumes:
+      - ./dev/postgres:/var/lib/postgresql
+    tmpfs: [/var/run/postgresql, /tmp]
+    healthcheck:
+      test: ["CMD", "pg_isready", "-h", "127.0.0.1", "-p", "21432", "-U", "seapin"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  # One-shot: catalog migrations + bucket creation, with the ingest identity.
+  seapin-migrate:
+    <<: *common
+    image: seapin:dev
+    build: .
+    container_name: seapin-dev-migrate
+    restart: "no"
+    command: ["migrate"]
+    environment:
+      <<: *seapin-env
+      S3_ACCESS_KEY: ${INGEST_S3_ACCESS_KEY:?}
+      S3_SECRET_KEY: ${INGEST_S3_SECRET_KEY:?}
+    depends_on:
+      seaweedfs: {condition: service_healthy}
+      postgres: {condition: service_healthy}
 
   seapin:
-    build: .
-    expose:
-      - "8080"
+    <<: *common
+    image: seapin:dev
+    container_name: seapin-dev
+    mem_limit: 512m
+    command: ["serve"]
     environment:
-      S3_ENDPOINT: minio:9000
-      S3_BUCKET: ipfs
-      S3_ACCESS_KEY: minioadmin
-      S3_SECRET_KEY: minioadmin
-      S3_USE_SSL: "false"
-      LISTEN_ADDR: ":8080"
+      <<: *seapin-env
+      S3_ACCESS_KEY: ${SERVE_S3_ACCESS_KEY:?}
+      S3_SECRET_KEY: ${SERVE_S3_SECRET_KEY:?}
     depends_on:
-      minio:
-        condition: service_healthy
+      seapin-migrate: {condition: service_completed_successfully}
+    healthcheck:
+      test: ["CMD", "/seapin", "health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
 
-volumes:
-  minio-data:
+  # Operator tool (seed); runs only with `docker compose run`.
+  seapin-tool:
+    <<: *common
+    image: seapin:dev
+    restart: "no"
+    profiles: [tools]
+    environment:
+      <<: *seapin-env
+      S3_ACCESS_KEY: ${INGEST_S3_ACCESS_KEY:?}
+      S3_SECRET_KEY: ${INGEST_S3_SECRET_KEY:?}
+    volumes:
+      - ./dev/seed:/seed:ro

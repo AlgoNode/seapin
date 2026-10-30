@@ -93,6 +93,15 @@ grow, not whether the data fits.
 - Keep the filer store on NVMe (here everything is NVMe).
 - After a restart, S3 GETs fail until every volume has remounted. Check the volume count before declaring healthy.
 
+Found while building M1 (4.45, 2026-10-30):
+- **Healthchecks must probe every component.** The master's `/cluster/healthz` turns healthy before the S3 gateway
+  listens. The compose check now requires the master `/cluster/healthz` plus volume, filer and S3 `/healthz`.
+- **Phones home and opens extra listeners by default.** `-master.telemetry=false` stops the usage reports to
+  telemetry.seaweedfs.com; `-s3.port.iceberg=0 -s3.port.lance=0` turns off the extra listeners.
+- **Slot math.** With `-volume.max=0`, slots = free disk / volume size, and a new collection grows 7 volumes at
+  once. 30 GB volumes therefore need >210 GB free before the first write. That is fine on 3 TB, but a small test VM
+  or workstation needs a smaller `volumeSizeLimitMB`; dev uses 1 GB.
+
 ## 1. Target design (per region; both regions identical)
 
 ```
@@ -148,6 +157,7 @@ refs    (key text pk,                       -- chain-level only: '<chain>/<asset
 links   (parent_cid text, json_path text,   -- per JSON object, from its content: immutable, computed once
          child_cid text, subpath text, pk (parent_cid, json_path))
 aliases (root_cid text, subpath text, leaf_cid text, pk (root_cid, subpath))
+takedowns (cid text pk, reason text, created_at timestamptz)   -- operator blocks, served as 451
 ```
 `path` in the key (decided 2026-10-30) records where the reference sits:
 - **Chain-level**, sent by the scanner as `refs`: `url` (the ASA URL itself) and `note/media_url` (ARC-69).
@@ -265,7 +275,7 @@ what today's `parseObj`/`fetchUri` do.
 - Blocked decisions are recorded in the catalog and never fetched again. Serving answers 403, or 451 for takedowns.
 - **Headers on every response**:
   - `X-Content-Type-Options: nosniff`
-  - `Content-Security-Policy: default-src 'none'; img-src data:; media-src 'self'; style-src 'unsafe-inline'; sandbox`
+  - `Content-Security-Policy: default-src 'none'; img-src 'self' data:; media-src 'self'; style-src 'unsafe-inline'; sandbox`
   - `Cross-Origin-Resource-Policy: cross-origin`
   - `Cache-Control: public, max-age=29030400, immutable`
   - `ETag: "<cid>"`
@@ -409,26 +419,31 @@ M1 and M3 can run in parallel once M0's contract is frozen; M3's `x_asset_meta` 
 
 Exit: the decisions table is filled in and the capacity numbers are recorded here.
 
-### M1: serve path, hardened (fresh code)
-- [ ] New layout replacing `main.go`: `cmd/seapin` (subcommands `serve`, `ingest`), plus `internal/`:
-      - `cidkey`: parse, normalize, shard
-      - `policy`: sniff, allowlist, headers
-      - `store`: S3 on SeaweedFS
-      - `catalog`: Postgres
-      - `fetch`: the fallback chain
-      - `serve`
-      - `ingest`
-- [ ] No `POST /upload` (A1, A2) and no MinIO defaults; configuration from env with required secrets (`${VAR:?}`).
-- [ ] CID validation and normalization to CIDv1 base32; `/ipfs/{cid}/{path...}` with alias lookup (A3, A4).
-- [ ] Local miss → 404 with a short `Cache-Control` (D2); nothing on the serve path talks to IPFS.
-- [ ] `http.ServeContent` (Range, HEAD, If-None-Match), `r.Context()`, server timeouts, graceful shutdown (A6–A8).
-- [ ] Security headers, serve-time allowlist re-check, 403/451 for blocked and takedown (A5).
-- [ ] Sharded key layout; `/health` (S3 + Postgres); Prometheus `/metrics`.
-- [ ] Compose to fleet conventions: SeaweedFS pinned with explicit `volumeSizeLimitMB` and `minFreeSpace`, host
-      network, 127.0.0.1, `read_only`, `cap_drop`, `mem_limit`, capped logs.
-- [ ] Unit tests: normalization, policy and Range.
+### M1: serve path, hardened (fresh code) — done 2026-10-30, branch `m1-serve-path`
+- [x] New layout replacing `main.go` (Go 1.27): `cmd/seapin` (`serve`, `migrate`, `seed`, `health`, `version`)
+      and `internal/{config,cidkey,policy,store,catalog,serve}`. `fetch` and `ingest` arrive with M2. — 2026-10-30
+- [x] No `POST /upload` (A1, A2) and no MinIO defaults; endpoints and credentials required from env. — 2026-10-30
+- [x] CID validation (identity multihashes refused) and normalization to CIDv1 base32; `/ipfs/{cid}/{path...}` with
+      alias lookup (A3, A4). — 2026-10-30
+- [x] Local miss → 404 with `Cache-Control: max-age=60` (D2); nothing on the serve path talks to IPFS. — 2026-10-30
+- [x] `http.ServeContent` over ranged S3 GETs (Range, HEAD, If-None-Match), `r.Context()`, server timeouts, graceful
+      shutdown (A6–A8). — 2026-10-30
+- [x] Security headers, serve-time allowlist re-check, 403 for blocked, 451 for takedowns (A5). Takedowns are held in
+      memory and refreshed every 60 s, so hits never wait on Postgres; `serve` won't start until the list has loaded
+      once. — 2026-10-30
+- [x] Sharded key layout; `/health` (503 only when S3 is down; Postgres state in the body); Prometheus `/metrics`.
+      — 2026-10-30
+- [x] Dev/reference compose: SeaweedFS 4.45 pinned with explicit `volumeSizeLimitMB` and `minFreeSpace`, Postgres
+      18.6, host network on 127.0.0.1, `read_only`, `cap_drop: [ALL]`, `no-new-privileges`, uid 1000, `mem_limit`,
+      capped logs. Separate S3 identities: serve read-only, ingest read/write/admin. One-shot `seapin-migrate`. —
+      2026-10-30
+- [x] Tests: unit (normalization, policy, Range/HEAD/304, miss, blocked, takedown, alias; `-race`), catalog against
+      real Postgres (env-gated), `scripts/dev-smoke.sh` end to end. — 2026-10-30
 
-Exit: on a local stack, seeded objects serve with working Range; an HTML object returns 403; tests pass.
+Exit (met 2026-10-30): on the dev stack a seeded PNG serves 200, 206 with the right bytes, 304 and HEAD. HTML is
+refused at seed time (403, catalog row `blocked not_allowed:text/html`). HTML planted in the bucket behind the
+policy's back also gets 403. A takedown gives 451, an unknown CID 404 (60 s), and the serve identity's PUT 403. Unit,
+race and catalog tests pass.
 
 ### M2: catalog, ingest worker and fetch sidecar
 - [ ] Postgres schema and migrations (§1).
