@@ -122,7 +122,9 @@ Found while building M1 (4.45, 2026-10-30):
 
 - **One binary, two roles**: `seapin serve` (public read path) and `seapin ingest` (queue consumer and fetcher). They
   ship as one image and run as two services, so ingest stalls never block serving.
-- **SeaweedFS**: `weed server -filer -s3`, single node, replication `000`, image pinned,
+- **SeaweedFS** (as deployed on the M4 hosts: `4.45_large_disk` image and **100 GB volumes**; never switch that
+  data to a non-`_large_disk` image; filer store and needle indexes on the local root disk). The original sketch
+  follows: `weed server -filer -s3`, single node, replication `000`, image pinned,
   `-master.volumeSizeLimitMB=30720` set explicitly. With no deletes there is no vacuum, so 100–270 × 30 GB volumes
   (3–8 TB) is fine. `-volume.max=0` derives the volume slot count from free space, so an online disk grow is picked
   up (see Capacity). `-volume.minFreeSpace=100GiB` stops writes before the filesystem fills. S3 identity for seapin
@@ -345,7 +347,8 @@ fairness, one TTL queue per ladder step, and state visible only as queue depth. 
 and survives restarts, and the load is trivial with one ingest per region.
 
 ### Capacity (append-only, so this replaces eviction)
-- **Disk**: the 3 TB volume is formatted whole-device (no partition table) as XFS and mounted at `/data`. It holds
+- **Disk** (as deployed: vdb at `/mnt/seaweed`, data only; the filer store, needle indexes and Postgres live on the
+  local root disk): the 3 TB volume is formatted whole-device (no partition table) as XFS and mounted at `/data`. It holds
   the SeaweedFS data, the filer store and Postgres; kubo's GC'd repo stays on the root disk. Growing is then "resize
   the volume at the provider, then `xfs_growfs /data`": online, no restart, up to 8 TB.
 - **SeaweedFS picks up the new space**: with `-volume.max=0` the volume server recomputes its free volume slots from
@@ -578,8 +581,35 @@ Found while building M3:
   on the quota 403). `main` now cancels the shared context, and bootstrap retries algod with backoff instead.
 
 ### M4: EU region live, shadow traffic
-- [ ] VM with 3 TB NVMe (XFS); stacks per **nodely-deploy** (seaweed, postgres, kubo, seapin serve and ingest,
-      openresty per D5); secrets in the vault and `.env` 0600; UFW; tailnet.
+**Hosts.** Provisioned 2026-10-30 by algoup and handed to seapin; record `algoup deploy/seaweed-nft/README.md`,
+registry service `seaweed-nft`.
+
+| region | host | address | machine |
+|---|---|---|---|
+| EU | **net-de-nur-ipfs** | 62.83.39.60, NetCup Nuremberg | 8 vCPU, 15 GB RAM, 251 GB root (local) |
+| US | **net-us-ash-ipfs** | 159.195.232.249, NetCup Ashburn | same |
+
+Both reach ssh only through 4160mgmt. Each has a 3 TB netcup block device `vdb` as whole-device XFS at
+`/mnt/seaweed`, growable online to 8 TB.
+
+- [x] VM, disk and XFS, docker, and a standalone SeaweedFS stack in `/home/docker/seaweed` (`4.45_large_disk`,
+      100 GB volumes, replication 000, `-volume.max=0`, `minFreeSpace=100GiB`, telemetry, iceberg and lance off,
+      loopback only). Zabbix base templates and UFW (ssh from 4160mgmt, agent from the Zabbix servers). Checked
+      live 2026-10-30 23:3x CET: Max 30 / Free 23 slots, no buckets yet, only :22 and :10050 public. — 2026-10-30
+      (algoup)
+- [ ] Take over the seaweed stack: an S3 identities file (serve read-only, ingest read/write), bucket `ipfs`, a
+      healthcheck across master/volume/filer/S3, and **`mem_limit` 12g → about 6g** (15 GB host; the
+      leveldb-backed needle index needs little RAM). Postgres, rainbow, seapin and openresty need the rest.
+- [ ] Stacks per **nodely-deploy**: Postgres (on the local root disk, beside the filer store; vdb is network block
+      storage), rainbow (`deploy/rainbow`), `seapin serve`, `seapin ingest`, and in the EU `seapin-scan`, plus
+      openresty per D5 with the two `X-Seapin-*` headers. Secrets go in the vault and `.env` 0600.
+- [ ] Network across providers. The NetCup hosts have no VLAN to Hetzner, so RabbitMQ, blksrv (htz-fi-hel-tmp),
+      the etl Postgres (`x_asset_meta`) and the legacy caches on ipfs-1/2 are reached over the tailnet or allowlisted
+      TLS endpoints (**nodely-expose**, **nodely-data**). The internal listener carries peer fetches between the two
+      hosts.
+- [ ] Filer store backup. It lives on the root disk and is not rebuildable: losing it orphans every stored object
+      until anti-entropy re-fetches them from the peer region. Back it up nightly (`weed filer.meta.backup` or a
+      leveldb snapshot), or accept that and document it.
 - [ ] Seed from the old caches on ipfs-1/2 (2.3–2.4 TB).
       - On both hosts, add an internal openresty listener (VLAN/tailnet only) that passes
         `Cache-Control: only-if-cached` to kubo and returns 412 on a miss.
