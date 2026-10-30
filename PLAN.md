@@ -597,12 +597,15 @@ Both reach ssh only through 4160mgmt. Each has a 3 TB netcup block device `vdb` 
       loopback only). Zabbix base templates and UFW (ssh from 4160mgmt, agent from the Zabbix servers). Checked
       live 2026-10-30 23:3x CET: Max 30 / Free 23 slots, no buckets yet, only :22 and :10050 public. — 2026-10-30
       (algoup)
-- [ ] Take over the seaweed stack: an S3 identities file (serve read-only, ingest read/write), bucket `ipfs`, a
-      healthcheck across master/volume/filer/S3, and **`mem_limit` 12g → about 6g** (15 GB host; the
-      leveldb-backed needle index needs little RAM). Postgres, rainbow, seapin and openresty need the rest.
-- [ ] Stacks per **nodely-deploy**: Postgres (on the local root disk, beside the filer store; vdb is network block
-      storage), rainbow (`deploy/rainbow`), `seapin serve`, `seapin ingest`, and in the EU `seapin-scan`, plus
-      openresty per D5 with the two `X-Seapin-*` headers. Secrets go in the vault and `.env` 0600.
+- [x] Take over the seaweed stack: an S3 identities file (serve read-only, ingest read/write), bucket `ipfs`, a
+      healthcheck across master/volume/filer/S3, and `mem_limit` 12g → 6g (EU). — 2026-10-30 23:10 UTC
+- [x] Stacks per **nodely-deploy** on net-de-nur-ipfs: Postgres (local root disk), rainbow, `seapin serve`,
+      `seapin ingest`, `seapin-scan` (live only for now). — 2026-10-30 23:11 UTC
+      - rolled out with `algoup deploy/seapin/rollout.sh eu all` (operator)
+      - recorded in algoup `deploy/seapin/README.md` (`4db9857`) and the registry
+      - verified end to end: read-through of three real ASA CIDs via rainbow (JSON 0.5 s, JPEG 1.8 s), then
+        cached; the live scanner's first refs cached in the fast lane
+- [ ] openresty face per D5 with the two `X-Seapin-*` headers, then shadow traffic.
       **Prepared 2026-10-30, not rolled out:**
       - `algoup deploy/seapin` (compose, env.example, README, `rollout.sh`) and the seaweed takeover in
         `deploy/seaweed-nft` (algoup `2026-10-30`)
@@ -610,10 +613,12 @@ Both reach ssh only through 4160mgmt. Each has a 3 TB netcup block device `vdb` 
       - RMQ_URL may list rabbit02 + rabbit01
       Remote writes (RabbitMQ user, UFW on ipfs-1/etl, the host stacks) wait for the operator: run
       `rollout.sh eu all`, or allow them.
-- [ ] Network across providers. The NetCup hosts have no VLAN to Hetzner, so RabbitMQ, blksrv (htz-fi-hel-tmp),
-      the etl Postgres (`x_asset_meta`) and the legacy caches on ipfs-1/2 are reached over the tailnet or allowlisted
-      TLS endpoints (**nodely-expose**, **nodely-data**). The internal listener carries peer fetches between the two
-      hosts.
+- [x] Network across providers, by fleet convention (public IP + UFW allowlist):
+      - RabbitMQ: vhost `seapin`, user `seapin_eu`, 5672 open to the EU host on rabbit02 (ipfs-1) and rabbit01
+        (etl); plain AMQP, as the cluster has no TLS listener
+      - blksrv: already public
+      - still to open: the etl Postgres (for the `x_asset_meta` writer) and the legacy endpoint on ipfs-1/2
+      — 2026-10-30
 - [ ] Filer store backup. It lives on the root disk and is not rebuildable: losing it orphans every stored object
       until anti-entropy re-fetches them from the peer region. Back it up nightly (`weed filer.meta.backup` or a
       leveldb snapshot), or accept that and document it.
