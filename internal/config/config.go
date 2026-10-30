@@ -185,8 +185,10 @@ type Scan struct {
 	Chain          string // genesis id, e.g. mainnet-v1.0
 	AlgodURL       string // live blocks and asset lookups
 	AlgodToken     string
+	AlgodReferer   string // optional Referer header on algod requests
 	BlocksURL      string // backfill blocks (blksrv); defaults to AlgodURL
 	BlocksToken    string
+	BlocksReferer  string
 	RMQURL         string
 	PGDSN          string // scanner state
 	BackfillRounds uint64 // 0 = down to genesis
@@ -206,8 +208,10 @@ func LoadScan() (Scan, error) {
 		Chain:          envOr("CHAIN", "mainnet-v1.0"),
 		AlgodURL:       p.need("ALGOD_URL"),
 		AlgodToken:     os.Getenv("ALGOD_TOKEN"),
+		AlgodReferer:   os.Getenv("ALGOD_REFERER"),
 		BlocksURL:      os.Getenv("BLOCKS_URL"),
 		BlocksToken:    os.Getenv("BLOCKS_TOKEN"),
+		BlocksReferer:  os.Getenv("BLOCKS_REFERER"),
 		RMQURL:         p.need("RMQ_URL"),
 		PGDSN:          p.need("PG_DSN"),
 		BackfillRounds: uint64(p.int("BACKFILL_ROUNDS", 0)),
@@ -221,7 +225,7 @@ func LoadScan() (Scan, error) {
 		Addr:           envOr("SCAN_ADDR", "127.0.0.1:8093"),
 	}
 	if s.BlocksURL == "" {
-		s.BlocksURL, s.BlocksToken = s.AlgodURL, s.AlgodToken
+		s.BlocksURL, s.BlocksToken, s.BlocksReferer = s.AlgodURL, s.AlgodToken, s.AlgodReferer
 	}
 	if s.MetaDSN != "" && (s.SeapinURL == "" || s.SeapinToken == "") {
 		p.errs = append(p.errs, "META_PG_DSN needs SEAPIN_INTERNAL_URL and SEAPIN_INTERNAL_TOKEN")

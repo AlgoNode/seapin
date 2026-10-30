@@ -7,7 +7,7 @@ seapin never fetches from IPFS while serving. Design, decisions and milestones: 
 **Status:**
 - M1 (the read path, `seapin serve`), M2 (ingest: queue consumer, fetch lanes, kubo sidecar, JSON link following) and
   M3 (the scanner `seapin-scan`, replacing algoipfssvc) are built and tested on the dev stack.
-- M3 still needs its first mainnet run (PLAN §3).
+- M3 has had its first mainnet run (24 of 26 refs identical to `x_asset_meta`, 0 different; PLAN §3).
 - Deployment (M4–M6) is next.
 
 ## What `serve` answers
@@ -99,7 +99,8 @@ the original chunking, so for those the operator vouches. S3 identities:
 |---|---|---|
 | `CHAIN` | `mainnet-v1.0` | genesis id; blocks of another chain are refused |
 | `ALGOD_URL`, `ALGOD_TOKEN` | required | live blocks and asset lookups |
-| `BLOCKS_URL`, `BLOCKS_TOKEN` | `ALGOD_URL` | backfill blocks (blksrv) |
+| `ALGOD_REFERER` | off | Referer header sent with algod requests (keep the value in `.env`) |
+| `BLOCKS_URL`, `BLOCKS_TOKEN`, `BLOCKS_REFERER` | the `ALGOD_*` values | backfill blocks (blksrv) |
 | `RMQ_URL`, `PG_DSN` | required | broker; scanner state database |
 | `BACKFILL_ROUNDS` | 0 (to genesis) | how far below the bootstrap round to go |
 | `BACKFILL_WINDOW` / `BACKFILL_FETCHERS` / `BACKFILL_MAX_REFS_PER_SEC` / `MAX_LIVE_LAG` | 64 / 16 / 200 / 10 | backfill pacing |

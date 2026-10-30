@@ -209,6 +209,7 @@ services:
     environment:
       CHAIN: mainnet-v1.0
       ALGOD_URL: ${ALGOD_URL:-https://mainnet-api.algonode.cloud}
+      ALGOD_REFERER: ${ALGOD_REFERER:-}  # set in .env, not here
       RMQ_URL: amqp://seapin:${RMQ_PASSWORD:?}@127.0.0.1:21672/
       PG_DSN: postgres://seapin:${PG_PASSWORD:?}@127.0.0.1:21432/seapin?sslmode=disable
       BACKFILL_ROUNDS: ${SCAN_BACKFILL_ROUNDS:-2000}

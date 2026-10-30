@@ -81,6 +81,7 @@ chain, and a policy check on the hit path as well as the miss path.
 | htz-hel-ipfs-1 | 2.3 TB | 19.3 M | 4 TB |
 | htz-hel-ipfs-2 | 2.4 TB | 29.2 M | 4 TB |
 
+M0 measured the ASA-referenced set itself: **1.88 TB in 3.91 M root CIDs, growing ~0.1–0.14 GB/day** (§3 M0).
 These repos also hold everything users ever fetched through the gateway, not just ASA-referenced objects. Each new
 server starts with 3 TB and can grow online, cheaply, to **8 TB** (operator, 2026-10-30): about 3× today's repos.
 3 TB alone would leave ~20% headroom over ~2.4 TB, so the referenced set and its daily growth (M0) decide *when* to
@@ -247,7 +248,8 @@ what today's `parseObj`/`fetchUri` do.
 - **Backpressure.** Backfill pauses while live is more than ~10 rounds behind, and its publish rate is token-bucket
   limited. Seapin's backfill lane absorbs the rest.
 - **`x_asset_meta` stays.** Nodely's GraphQL exposes it (`graphql.nft_meta` and `asset.xxx_nft_meta` in the
-  indexers' `graphql.sql`).
+  indexers' `graphql.sql`). The writer targets the etl ledgerdb table only; logical replication (`ledger_extras`)
+  carries it to the 5 indexer regions, so its columns must not change without the subscribers.
   - A compat writer in the scanner consumes seapin-EU's object events (`seapin.events`: `cached` / `blocked` /
     `failed`).
   - On an event it reads `/internal/assets/<chain>/<asset>` and writes the existing JSON shape (`extra.json/img/
@@ -402,19 +404,33 @@ peer-fetching a few TB through seapin turns out to be too slow.
 M1 and M3 can run in parallel once M0's contract is frozen; M3's `x_asset_meta` compat writer needs M2's events.
 
 ### M0: ground truth and decisions
-- [ ] Size the referenced set: distinct CIDs and summed bytes by MIME class from `x_asset_meta` (sizes approximate,
-      see §0), plus new-ASA bytes/day. Set the go-live size (3 TB, or more right away) and project when 8 TB is
-      reached.
-- [ ] From `nodely.apilog` (flag `api:ipfs`): what share of today's requests is for CIDs no ASA references? Under D2
-      those will 404. If the share is large, find which references the scanner misses and add them in M3 before
-      cutover.
+- [x] Size the referenced set (`x_asset_meta` on etl ledgerdb, read 2026-10-30 20:03 UTC):
+      - 6.06 M assets → **3.91 M distinct root CIDs** (4.08 M CID+path objects), **1.88 TB** by Content-Length
+      - by class: img 1.37 M objects / 1,659 GB; vid 8.3 k / 206 GB; oth 8.6 k / 9.7 GB; aud 1 k / 3.8 GB;
+        json 2.70 M / 1.0 GB
+      - png + jpeg + mp4 + gif are 96% of the bytes
+      - growth from new ASAs: ~350 objects and 0.10–0.14 GB per day (365 days: 36.6 GB)
+      - **3 TB at go-live holds the full backfill with ~1.1 TB headroom**; ASAs alone would take decades to reach
+        8 TB
+      Data and queries: `/home/urtho/dev/tmp/seapin-m0/`. — 2026-10-30
+- [x] Demand vs. the referenced set (`nodely.apilog`, 7 days to 2026-10-30 00:00 UTC):
+      - 2.34 M requests, 30% of them 403 referer rejections; 603 k distinct CIDs
+      - CIDs no ASA references: **20.6% of requests, 21.6% of today's successful ones, 16.2% of distinct CIDs**,
+        but only 3.2% of bytes
+      - 45% of those requests come from Pera; the top ones are dead CIDs that fail today too; the rest is a long
+        tail (17.8 k CIDs requested once)
+      - **Strict D2 would 404 about one in five requests that succeed today**, so D2 needs revisiting (§4). The
+        98 k out-of-set CIDs are in `seapin-m0/apilog_out_cids.tsv` for M3's gap hunt. — 2026-10-30
 - [ ] Spike: kubo vs rainbow on ~1k real CIDs (success rate, p50/p95, RAM); pick the fetch sidecar (D1). Also
       measure: the time-to-first-byte distribution of successful fetches (sets the fast-lane cutoff), the share of
       dead CIDs in a historical sample (sizes the backfill), and the sidecar's concurrency ceiling (caps total slots).
 - [x] Freeze message contract v1: `internal/contract` (ref, takedown, object event) with validation and tests. — 2026-10-30
 - [ ] Settle D1 and D6 (§4).
-- [ ] Confirm how the indexers' GraphQL gets `x_asset_meta` (an fdw to the etl Postgres?) and who else reads it or
-      the `log` exchange.
+- [x] How the indexers get `x_asset_meta`: logical replication, publication `ledger_extras` on the etl ledgerdb
+      → 5 subscriptions (euc, eud, usg2, usf, sgc). The etl GraphQL reads it directly. Other readers on etl: views
+      `graphql.asset`/`asset_meta`/`nft_meta()`, `ch.asset(_live)`, `xv_asset_cids`, the public Grafana IPFS
+      panels. The fdw `ipfsmeta` is a dead leftover. RabbitMQ `an.hdr.ipfs.log` is bound only to `an.ipfs.db`
+      (no static/discord queues). — 2026-10-30
 - [ ] Measure blksrv backfill throughput (rounds/s at 8, 16 and 32 parallel fetchers).
 - [x] Registry: seapin `status: active` — 2026-10-30 (`_registry` 94248c4).
 - [ ] Registry `deps` (RabbitMQ, algod, blksrv, the etl Postgres for `x_asset_meta`), each added when the code starts using it (M2/M3).
@@ -523,9 +539,13 @@ Exit status 2026-10-30:
     newest first, live 1000→1002, each round fetched once, cursors persisted
   - asset ordering and ARC-19/69 cases on real Postgres
   - publisher confirms through the dev RabbitMQ, picked up by dev ingest
-- Blocked today: the mainnet run through Nodely's public API. This workstation's IP was over the daily free quota
-  (91k requests / 13.2 GB on 2026-10-30, from other traffic; the scanner only got 403s). Re-run after 00:00 UTC
-  with `docker compose --profile scan up -d seapin-scan`; for full backfills use our own algod/blksrv.
+- Mainnet, 2026-10-30 20:36 UTC, through Nodely's public API (`ALGOD_REFERER` in `.env` to get past the daily
+  free quota):
+  - bootstrapped at round 66,487,569; backfilled 2,000 rounds in 28 s (4 fetchers); live followed with lag 0
+  - 737 assets configured in the window (258 destroyed) → 26 refs, in line with M0's ~350 new objects/day
+  - **24 of the 26 refs carry exactly the root CID `x_asset_meta` holds for the asset, 0 differ**; the other 2
+    assets are newer than the 20:03 UTC snapshot
+  - for the full backfill use our own algod/blksrv
 - Not yet: the 1k-asset `x_asset_meta` comparison (needs mainnet data, M4).
 
 Found while building M3:
@@ -576,7 +596,7 @@ Decided by the operator on 2026-10-30:
 |---|---|---|---|
 | R | Replication | event fanout + peer-first fetch + daily anti-entropy (§2) | no SeaweedFS coupling between regions |
 | K | Catalog key | `<chain>/<asset>/<where the reference sits>` (§1) | one key per reference; the IPFS sub-path is a separate column |
-| D2 | Request for a CID that is not cached | 404. The only exception is proxying from the peer region's cache during replication lag; unreferenced CIDs are never fetched or stored | the serve path never touches IPFS; scanner coverage decides what users can get (M0 measures the 404 share, M3 closes gaps) |
+| D2 | Request for a CID that is not cached | 404. The only exception is proxying from the peer region's cache during replication lag; unreferenced CIDs are never fetched or stored | the serve path never touches IPFS; scanner coverage decides what users can get. **M0 measured the cost: ~21.6% of today's successful requests (16.2% of distinct CIDs, 3.2% of bytes) are for CIDs no ASA references, so revisit before cutover** |
 | D3 | Allowlist and size cap | §1 list plus SVG and GLB; PDF and plain text blocked; 256 MiB cap | larger objects are recorded as `too_large` |
 | D4 | SVG | allowed, always served with CSP `sandbox` + `nosniff` | scripts inside an SVG cannot run |
 | D5 | Front proxy | keep openresty (whitelist, apilog `$flg`) | seapin listens on 127.0.0.1 only |

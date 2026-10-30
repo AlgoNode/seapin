@@ -50,11 +50,11 @@ func run(ctx context.Context, log *slog.Logger) error {
 	if err != nil {
 		return err
 	}
-	live, err := algod.MakeClient(cfg.AlgodURL, cfg.AlgodToken)
+	live, err := algodClient(cfg.AlgodURL, cfg.AlgodToken, cfg.AlgodReferer)
 	if err != nil {
 		return err
 	}
-	blocks, err := algod.MakeClient(cfg.BlocksURL, cfg.BlocksToken)
+	blocks, err := algodClient(cfg.BlocksURL, cfg.BlocksToken, cfg.BlocksReferer)
 	if err != nil {
 		return err
 	}
@@ -121,6 +121,14 @@ func run(ctx context.Context, log *slog.Logger) error {
 	cancel() // stop the compat writer too, so a failed run is reported
 	wg.Wait()
 	return err
+}
+
+func algodClient(url, token, referer string) (*algod.Client, error) {
+	var headers []*common.Header
+	if referer != "" {
+		headers = append(headers, &common.Header{Key: "Referer", Value: referer})
+	}
+	return algod.MakeClientWithHeaders(url, token, headers)
 }
 
 // lookup reads an asset's creation parameters from algod; 404 means destroyed.
