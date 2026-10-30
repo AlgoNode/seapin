@@ -217,3 +217,22 @@ func TestBuildMeta(t *testing.T) {
 }
 
 func newRegistry() *prometheus.Registry { return prometheus.NewRegistry() }
+
+// Asset parameters are arbitrary bytes on chain (mainnet asset 3753495419 has
+// a NUL); they must not fail the block's transaction.
+func TestApplyBinaryText(t *testing.T) {
+	s := openScanner(t)
+	refs := s.applyAll(t, contract.SrcBackfill, ev(11, Create, 100, types.AssetParams{
+		URL:       "ipfs://bafkreigh2akiscaildcqabsyg3dfr6chu3fgpregiymsck7e7aqa4s52zy\x00\x00",
+		AssetName: "A\x00B\xff", UnitName: "\x00",
+	}, ""))
+	if len(refs) != 1 || refs[0].CID != "bafkreigh2akiscaildcqabsyg3dfr6chu3fgpregiymsck7e7aqa4s52zy" {
+		t.Fatalf("refs %+v", refs)
+	}
+	var name string
+	var unit *string
+	s.DB.QueryRow(context.Background(), `SELECT name, unit FROM scan_assets WHERE asset = 11`).Scan(&name, &unit)
+	if name != "AB\uFFFD" || unit != nil {
+		t.Errorf("name %q unit %v", name, unit)
+	}
+}

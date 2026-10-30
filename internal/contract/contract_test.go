@@ -37,6 +37,7 @@ func TestRefValidation(t *testing.T) {
 		"asset 0":      func(r *Ref) { r.Asset = 0; r.Key = KeyOf(r.Chain, 0, r.Path) },
 		"path":         func(r *Ref) { r.Path = "url/image"; r.Key = KeyOf(r.Chain, r.Asset, r.Path) },
 		"empty note":   func(r *Ref) { r.Path = "note/"; r.Key = KeyOf(r.Chain, r.Asset, r.Path) },
+		"note nul":     func(r *Ref) { r.Path = "note/a\x00"; r.Key = KeyOf(r.Chain, r.Asset, r.Path) },
 		"key mismatch": func(r *Ref) { r.Key = "x" },
 		"src":          func(r *Ref) { r.Src = "other" },
 		"round 0":      func(r *Ref) { r.Round = 0 },

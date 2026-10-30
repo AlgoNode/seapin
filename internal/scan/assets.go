@@ -3,6 +3,7 @@ package scan
 import (
 	"context"
 	"errors"
+	"strings"
 
 	"github.com/algorand/go-algorand-sdk/v2/types"
 	"github.com/jackc/pgx/v5"
@@ -56,7 +57,7 @@ func (s *Scanner) apply(ctx context.Context, tx pgx.Tx, ev Event, src string) ([
 				return nil, err
 			}
 			if found {
-				a.url, a.name, a.unit, a.creator = url, name, unit, creator
+				a.setText(url, name, unit, creator)
 			}
 		}
 		refs = append(refs, s.noteRefs(a, ev, src)...)
@@ -68,7 +69,7 @@ func (s *Scanner) apply(ctx context.Context, tx pgx.Tx, ev Event, src string) ([
 		if !a.found {
 			a.newestSeq = ev.Seq
 			a.setAddresses(ev.Params)
-			a.url, a.name, a.unit, a.creator = ev.Params.URL, ev.Params.AssetName, ev.Params.UnitName, ev.Sender.String()
+			a.setText(ev.Params.URL, ev.Params.AssetName, ev.Params.UnitName, ev.Sender.String())
 			refs = append(refs, s.noteRefs(a, ev, src)...)
 			refs = append(refs, s.urlRef(a, ev, ev.Round, src)...)
 			break
@@ -77,12 +78,23 @@ func (s *Scanner) apply(ctx context.Context, tx pgx.Tx, ev Event, src string) ([
 		if a.url != "" {
 			return nil, nil
 		}
-		a.url, a.name, a.unit, a.creator = ev.Params.URL, ev.Params.AssetName, ev.Params.UnitName, ev.Sender.String()
+		a.setText(ev.Params.URL, ev.Params.AssetName, ev.Params.UnitName, ev.Sender.String())
 		if !a.destroyed {
 			refs = append(refs, s.urlRef(a, ev, uint64(a.newestSeq>>20), src)...)
 		}
 	}
 	return refs, s.saveAsset(ctx, tx, ev.Asset, a, refs)
+}
+
+// setText sets the asset's text fields. On chain they are arbitrary bytes, and
+// Postgres text takes neither NUL nor invalid UTF-8: one such asset would
+// otherwise fail its block's transaction on every retry and stall the cursor.
+func (a *asset) setText(url, name, unit, creator string) {
+	a.url, a.name, a.unit, a.creator = pgText(url), pgText(name), pgText(unit), pgText(creator)
+}
+
+func pgText(s string) string {
+	return strings.ToValidUTF8(strings.ReplaceAll(s, "\x00", ""), "\uFFFD")
 }
 
 func (a *asset) setAddresses(p types.AssetParams) {

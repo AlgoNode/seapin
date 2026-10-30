@@ -233,8 +233,10 @@ func join(path, seg string) string {
 	return path + "/" + seg
 }
 
+// escape makes a JSON key one path segment (RFC 6901). A NUL ("\u0000" in
+// the JSON) is dropped: paths are Postgres text.
 func escape(k string) string {
-	return strings.ReplaceAll(strings.ReplaceAll(k, "~", "~0"), "/", "~1")
+	return strings.ReplaceAll(strings.ReplaceAll(strings.ReplaceAll(k, "\x00", ""), "~", "~0"), "/", "~1")
 }
 
 // NoteLinks returns the IPFS links in an ARC-69 note (a JSON object with

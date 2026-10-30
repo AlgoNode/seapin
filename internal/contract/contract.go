@@ -133,7 +133,7 @@ func validPath(p string) bool {
 	if !ok || rest == "" {
 		return false
 	}
-	return !slices.Contains(strings.Split(rest, "/"), "")
+	return !slices.Contains(strings.Split(rest, "/"), "") && !strings.ContainsRune(rest, 0)
 }
 
 // Decode parses a message from the "seapin" exchange into a validated *Ref or

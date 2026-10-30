@@ -161,6 +161,10 @@ func TestNoteLinks(t *testing.T) {
 	if len(links) != 1 || links[0].Path != "note/media_url" || links[0].CID != raw {
 		t.Errorf("got %+v", links)
 	}
+	// A NUL in a key (paths are Postgres text) is dropped.
+	if links := NoteLinks([]byte(`{"standard":"arc69","media\u0000_url":"ipfs://`+raw+`"}`), 32); len(links) != 1 || links[0].Path != "note/media_url" {
+		t.Errorf("NUL key: got %+v", links)
+	}
 	for _, n := range []string{`{"media_url":"ipfs://` + raw + `"}`, `hello`, ``, `{"standard":"arc3"}`} {
 		if links := NoteLinks([]byte(n), 32); len(links) != 0 {
 			t.Errorf("%q: got %+v", n, links)
