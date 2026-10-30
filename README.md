@@ -5,9 +5,10 @@ every IPFS object Algorand ASAs reference. Only content on an allowlist is store
 seapin never fetches from IPFS while serving. Design, decisions and milestones: [PLAN.md](PLAN.md).
 
 **Status:**
-- M1 (the read path, `seapin serve`) and M2 (ingest: queue consumer, fetch lanes, kubo sidecar, JSON link following)
-  are done on the dev stack.
-- The scanner rewrite (`cmd/seapin-scan`, M3) is next.
+- M1 (the read path, `seapin serve`), M2 (ingest: queue consumer, fetch lanes, kubo sidecar, JSON link following) and
+  M3 (the scanner `seapin-scan`, replacing algoipfssvc) are built and tested on the dev stack.
+- M3 still needs its first mainnet run (PLAN §3).
+- Deployment (M4–M6) is next.
 
 ## What `serve` answers
 
@@ -36,6 +37,7 @@ Content policy (`internal/policy`): the type is sniffed from the bytes, never ta
 
 ```
 cmd/seapin          serve | ingest | migrate | seed <cid> <file> | health [addr] | version
+cmd/seapin-scan     the scanner: live + backfill cursors over Algorand blocks → refs; x_asset_meta compat writer
 internal/cidkey     CID parsing, CIDv1 base32 normalization, S3 key, sub-path validation, raw-CID verification
 internal/policy     sniffing, allowlist, size cap, security headers
 internal/store      S3 (SeaweedFS) access: stat, ranged reads, put, bucket
@@ -45,6 +47,8 @@ internal/contract   wire format v1: refs and takedowns (exchange "seapin"), obje
 internal/arcmeta    IPFS references in ASA URLs (ARC-3 {id}, ARC-19 templates), ARC-69 notes, links in JSON
 internal/fetch      one object from peer → kubo → Pinata, with progress deadlines, policy and size cap
 internal/ingest     intake (queue → catalog), per-lane scheduler, events
+internal/scan       scanner: block events (inner txns), asset state (newest first), publisher confirms, meta writer
+internal/pgmigrate  embedded SQL migrations (catalog, scanner)
 internal/config     environment
 deploy/kubo         kubo container-init script: fetch-only, loopback, GC'd
 ```
@@ -60,6 +64,7 @@ docker compose up -d --build          # seaweedfs, postgres, seapin-migrate (one
 docker compose run --rm seapin-tool seed <cid> /seed/<file>   # put the file in ./dev/seed first
 ./scripts/dev-smoke.sh                # end-to-end check of the serve path
 ./scripts/dev-smoke-ingest.sh         # end-to-end check of ingest (kubo → queue → lanes → bucket → gateway)
+docker compose --profile scan up -d seapin-scan   # scanner against mainnet via Nodely's public API (opt-in)
 ```
 
 `seed` applies the same policy as ingest will. It verifies raw-codec CIDs against the file; dag-pb CIDs depend on
@@ -88,10 +93,24 @@ the original chunking, so for those the operator vouches. S3 identities:
 | `QUEUE_TYPE`, `QUEUE_MAX_LENGTH`, `PREFETCH` | classic, 10 M, 256 | the region queue |
 | `INGEST_ADDR` | `127.0.0.1:8091` | ingest `/health` and `/metrics` |
 
+`seapin-scan`:
+
+| variable | default | |
+|---|---|---|
+| `CHAIN` | `mainnet-v1.0` | genesis id; blocks of another chain are refused |
+| `ALGOD_URL`, `ALGOD_TOKEN` | required | live blocks and asset lookups |
+| `BLOCKS_URL`, `BLOCKS_TOKEN` | `ALGOD_URL` | backfill blocks (blksrv) |
+| `RMQ_URL`, `PG_DSN` | required | broker; scanner state database |
+| `BACKFILL_ROUNDS` | 0 (to genesis) | how far below the bootstrap round to go |
+| `BACKFILL_WINDOW` / `BACKFILL_FETCHERS` / `BACKFILL_MAX_REFS_PER_SEC` / `MAX_LIVE_LAG` | 64 / 16 / 200 / 10 | backfill pacing |
+| `META_PG_DSN` + `SEAPIN_INTERNAL_URL` + `SEAPIN_INTERNAL_TOKEN` | off | x_asset_meta compat writer |
+| `SCAN_ADDR` | `127.0.0.1:8093` | `/health`, `/metrics` |
+
 ## Tests
 
 ```sh
 go test -race -p=$(nproc --ignore=1) ./...
 # catalog against a real Postgres (throwaway schema), e.g. the dev stack's:
-SEAPIN_TEST_PG_DSN='postgres://seapin:<PG_PASSWORD>@127.0.0.1:21432/seapin?sslmode=disable' go test ./internal/catalog/
+SEAPIN_TEST_PG_DSN='postgres://seapin:<PG_PASSWORD>@127.0.0.1:21432/seapin?sslmode=disable' \
+SEAPIN_TEST_RMQ_URL='amqp://seapin:<RMQ_PASSWORD>@127.0.0.1:21672/' go test ./...
 ```

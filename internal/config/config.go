@@ -179,3 +179,55 @@ func envOr(key, fallback string) string {
 	}
 	return fallback
 }
+
+// Scan holds what seapin-scan needs.
+type Scan struct {
+	Chain          string // genesis id, e.g. mainnet-v1.0
+	AlgodURL       string // live blocks and asset lookups
+	AlgodToken     string
+	BlocksURL      string // backfill blocks (blksrv); defaults to AlgodURL
+	BlocksToken    string
+	RMQURL         string
+	PGDSN          string // scanner state
+	BackfillRounds uint64 // 0 = down to genesis
+	Window         int
+	Fetchers       int
+	MaxRefsPerSec  int
+	MaxLiveLag     uint64
+	MetaDSN        string // database with x_asset_meta; empty = compat writer off
+	SeapinURL      string // seapin's internal listener, for the compat writer
+	SeapinToken    string
+	Addr           string // /health and /metrics
+}
+
+func LoadScan() (Scan, error) {
+	p := parser{}
+	s := Scan{
+		Chain:          envOr("CHAIN", "mainnet-v1.0"),
+		AlgodURL:       p.need("ALGOD_URL"),
+		AlgodToken:     os.Getenv("ALGOD_TOKEN"),
+		BlocksURL:      os.Getenv("BLOCKS_URL"),
+		BlocksToken:    os.Getenv("BLOCKS_TOKEN"),
+		RMQURL:         p.need("RMQ_URL"),
+		PGDSN:          p.need("PG_DSN"),
+		BackfillRounds: uint64(p.int("BACKFILL_ROUNDS", 0)),
+		Window:         p.int("BACKFILL_WINDOW", 64),
+		Fetchers:       p.int("BACKFILL_FETCHERS", 16),
+		MaxRefsPerSec:  p.int("BACKFILL_MAX_REFS_PER_SEC", 200),
+		MaxLiveLag:     uint64(p.int("MAX_LIVE_LAG", 10)),
+		MetaDSN:        os.Getenv("META_PG_DSN"),
+		SeapinURL:      os.Getenv("SEAPIN_INTERNAL_URL"),
+		SeapinToken:    os.Getenv("SEAPIN_INTERNAL_TOKEN"),
+		Addr:           envOr("SCAN_ADDR", "127.0.0.1:8093"),
+	}
+	if s.BlocksURL == "" {
+		s.BlocksURL, s.BlocksToken = s.AlgodURL, s.AlgodToken
+	}
+	if s.MetaDSN != "" && (s.SeapinURL == "" || s.SeapinToken == "") {
+		p.errs = append(p.errs, "META_PG_DSN needs SEAPIN_INTERNAL_URL and SEAPIN_INTERNAL_TOKEN")
+	}
+	if s.Window < 1 {
+		p.errs = append(p.errs, "BACKFILL_WINDOW must be at least 1")
+	}
+	return s, p.err()
+}

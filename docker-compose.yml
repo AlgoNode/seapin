@@ -196,6 +196,31 @@ services:
       timeout: 5s
       retries: 3
 
+  # The scanner, against mainnet through Nodely's public API (live from the tip
+  # plus SCAN_BACKFILL_ROUNDS below it). Opt-in: docker compose --profile scan up -d.
+  # Its x_asset_meta compat writer targets the dev Postgres (deploy/dev/x_asset_meta.sql).
+  seapin-scan:
+    <<: *common
+    image: seapin:dev
+    container_name: seapin-dev-scan
+    profiles: [scan]
+    entrypoint: ["/seapin-scan"]
+    mem_limit: 512m
+    environment:
+      CHAIN: mainnet-v1.0
+      ALGOD_URL: ${ALGOD_URL:-https://mainnet-api.algonode.cloud}
+      RMQ_URL: amqp://seapin:${RMQ_PASSWORD:?}@127.0.0.1:21672/
+      PG_DSN: postgres://seapin:${PG_PASSWORD:?}@127.0.0.1:21432/seapin?sslmode=disable
+      BACKFILL_ROUNDS: ${SCAN_BACKFILL_ROUNDS:-2000}
+      BACKFILL_FETCHERS: "4"
+      SCAN_ADDR: 127.0.0.1:21093
+      META_PG_DSN: postgres://seapin:${PG_PASSWORD:?}@127.0.0.1:21432/seapin?sslmode=disable
+      SEAPIN_INTERNAL_URL: http://127.0.0.1:21092
+      SEAPIN_INTERNAL_TOKEN: ${INTERNAL_TOKEN:?}
+    depends_on:
+      rabbitmq: {condition: service_healthy}
+      seapin-ingest: {condition: service_healthy}  # its queue must exist before refs are published
+
   # Operator tool (seed); runs only with `docker compose run`.
   seapin-tool:
     <<: *common

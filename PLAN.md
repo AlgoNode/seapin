@@ -492,23 +492,48 @@ Found while building M2:
   `ERL_EPMD_ADDRESS`, `RABBITMQ_DIST_PORT` and `inet_dist_use_interface` pin them (dev compose does). Production
   RabbitMQ is the existing cluster; this only matters for a local broker.
 
-### M3: scanner rewrite (§1 Scanner; replaces algoipfssvc)
-- [ ] Block reader: algod for live, blksrv for backfill (parallel, descending windows); inner transactions; created
-      asset ids from ApplyData.
-- [ ] Two cursors with confirmed checkpoints: bootstrap at the tip, backfill down to genesis, backpressure.
-- [ ] Resolver shared with seapin (`internal/arcmeta`): `ipfs://`, `/ipfs/`, `*.ipfs.*`, ARC-3 `{id}`, ARC-19
-      with the named address field, ARC-69 note; CID validation; http(s) dropped.
-- [ ] `asset_seen` newest-first dedupe; a reconfiguration sends a new root ref when the named address changes.
-- [ ] Publish chain-level `ref` messages (contract v1) with publisher confirms.
-- [ ] Any gaps M0 finds. Under D2, anything not reachable from a chain-level ref is never served.
-- [ ] `x_asset_meta` compat writer driven by `seapin.events` (needs M2).
-- [ ] Runs beside algoipfssvc, which keeps writing `x_asset_meta` until the compat writer is verified. At M6
-      algoipfssvc, its `static` worker and Redis are retired.
+### M3: scanner rewrite (§1 Scanner; replaces algoipfssvc) — built and tested offline 2026-10-30, branch `m1-serve-path`
+- [x] Block reader `cmd/seapin-scan`: algod REST for live; the same API for backfill (point `BLOCKS_URL` at
+      blksrv); inner transactions walked; created asset ids from ApplyData; blocks from another genesis id
+      refused. — 2026-10-30
+- [x] Two cursors in `scan_state`: bootstrap at the tip, live upwards, backfill down to the floor (genesis by
+      default) in windows fetched in parallel. A cursor only moves after RabbitMQ has confirmed the refs. Backfill
+      pauses while live is >10 rounds behind; refs/s budget. — 2026-10-30
+- [x] Resolver shared with seapin (`internal/arcmeta`): `ipfs://`, `/ipfs/`, `*.ipfs.*`, ARC-3 `{id}`, ARC-19 with
+      the named address field, ARC-69 notes; CIDs validated; http(s) dropped. — 2026-10-30
+- [x] `scan_assets`, newest first:
+      - configurations are ordered by (round, position in block); one block may create and reconfigure an asset
+      - the backfill reads each block newest first, so older configurations are skipped
+      - a reconfiguration seen before the creation keeps its addresses until the creation supplies the URL
+      - live asks algod for the URL in that case
+      - destroyed assets produce nothing
 
-Exit:
-- references for a new ASA reach both region queues within seconds of its block
-- backfill progress (current round, rounds/s) is visible
-- for a 1k-asset sample, `x_asset_meta` from the new writer matches the old on the fields GraphQL serves
+      — 2026-10-30
+- [x] Publish chain-level `ref` messages (contract v1) with publisher confirms. — 2026-10-30
+- [ ] Any gaps M0 finds. Under D2, anything not reachable from a chain-level ref is never served.
+- [x] `x_asset_meta` compat writer: polls `/internal/assets` for assets with new refs, waits up to ~2 h for
+      pending objects, then writes the old JSON shape (`id, an, un, r, url, rnd, extra.{json,img,vid,aud,oth}`).
+      — 2026-10-30
+- [ ] Runs beside algoipfssvc, which keeps writing `x_asset_meta` until the compat writer is verified (deploy, M4).
+      At M6 algoipfssvc, its `static` worker and Redis are retired.
+
+Exit status 2026-10-30:
+- Offline:
+  - full cursor run against a fake algod serving real msgpack blocks: bootstrap at tip 1000, backfill 999→975
+    newest first, live 1000→1002, each round fetched once, cursors persisted
+  - asset ordering and ARC-19/69 cases on real Postgres
+  - publisher confirms through the dev RabbitMQ, picked up by dev ingest
+- Blocked today: the mainnet run through Nodely's public API. This workstation's IP was over the daily free quota
+  (91k requests / 13.2 GB on 2026-10-30, from other traffic; the scanner only got 403s). Re-run after 00:00 UTC
+  with `docker compose --profile scan up -d seapin-scan`; for full backfills use our own algod/blksrv.
+- Not yet: the 1k-asset `x_asset_meta` comparison (needs mainnet data, M4).
+
+Found while building M3:
+- `freeze` is a reserved word in Postgres; the address columns are `*_addr`.
+- The bootstrap insert used one parameter as both a column value and in `$2 - 1`; Postgres refuses (42P08). The
+  offline cursor test caught it before any real start.
+- A failed `Run` left `main` waiting on the compat writer, so the error was never logged (seen as a silent hang
+  on the quota 403). `main` now cancels the shared context, and bootstrap retries algod with backoff instead.
 
 ### M4: EU region live, shadow traffic
 - [ ] VM with 3 TB NVMe (XFS); stacks per **nodely-deploy** (seaweed, postgres, kubo, seapin serve and ingest,
