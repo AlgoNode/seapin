@@ -28,6 +28,8 @@ type fakeAlgod struct {
 	tip     atomic.Uint64
 	mu      sync.Mutex
 	fetched map[uint64]int
+	delay   func(round uint64) time.Duration // per-block latency; nil = none
+	empty   bool                             // blocks without transactions
 }
 
 const rawCID = "bafkreigh2akiscaildcqabsyg3dfr6chu3fgpregiymsck7e7aqa4s52zy"
@@ -54,10 +56,15 @@ func (f *fakeAlgod) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		f.mu.Lock()
 		f.fetched[round]++
 		f.mu.Unlock()
+		if f.delay != nil {
+			time.Sleep(f.delay(round))
+		}
 		create := acfg(address(byte(round)), 0, types.AssetParams{URL: "ipfs://" + rawCID + "/" + strconv.FormatUint(round, 10) + ".json"}, "")
 		create.ApplyData.ConfigAsset = types.AssetIndex(round)
 		b := types.Block{BlockHeader: types.BlockHeader{Round: types.Round(round), TimeStamp: 1_700_000_000, GenesisID: "mainnet-v1.0"}}
-		b.Payset = []types.SignedTxnInBlock{{SignedTxnWithAD: create, HasGenesisID: true}}
+		if !f.empty {
+			b.Payset = []types.SignedTxnInBlock{{SignedTxnWithAD: create, HasGenesisID: true}}
+		}
 		w.Header().Set("Content-Type", "application/msgpack")
 		w.Write(msgpack.Encode(models.BlockResponse{Block: b}))
 	default:
@@ -156,4 +163,43 @@ func TestRunCursors(t *testing.T) {
 	if ref.Key != "mainnet-v1.0/1000/url" || ref.Subpath != "1000.json" || ref.Src != contract.SrcLive || ref.TxID == "" {
 		t.Errorf("live ref %+v", ref)
 	}
+}
+
+// TestBackfillPipelinesSlowBlocks: every 10th block takes 300 ms. Fetched in
+// windows of 64 with a barrier per window that is at least 7 × 300 ms; the
+// pipeline keeps fetching past a slow block, so 400 rounds take well under that.
+func TestBackfillPipelinesSlowBlocks(t *testing.T) {
+	s := openScanner(t)
+	fa := &fakeAlgod{fetched: map[uint64]int{}, empty: true, delay: func(r uint64) time.Duration {
+		if r%10 == 0 {
+			return 300 * time.Millisecond
+		}
+		return 5 * time.Millisecond
+	}}
+	fa.tip.Store(5000)
+	srv := httptest.NewServer(fa)
+	defer srv.Close()
+	c, err := algod.MakeClient(srv.URL, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.Algod, s.Blocks, s.Live, s.Backfill = c, c, &memPublisher{}, &memPublisher{}
+	s.Fetchers, s.Window, s.MaxLiveLag = 32, 64, 10
+	s.Register(newRegistry())
+
+	next, floor := int64(4999), int64(4600)
+	start := time.Now()
+	if err := s.backfill(context.Background(), &next, floor); err != nil {
+		t.Fatal(err)
+	}
+	took := time.Since(start)
+	if next != floor-1 || took > 1500*time.Millisecond {
+		t.Fatalf("next %d (want %d), took %v (window barrier >= 2.1 s)", next, floor-1, took)
+	}
+	fa.mu.Lock()
+	defer fa.mu.Unlock()
+	if len(fa.fetched) != 400 {
+		t.Errorf("fetched %d distinct rounds, want 400", len(fa.fetched))
+	}
+	t.Logf("400 rounds, every 10th taking 300 ms, 32 fetchers: %v", took.Round(time.Millisecond))
 }

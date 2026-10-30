@@ -34,8 +34,8 @@ type Scanner struct {
 	Lookup   LookupFunc
 
 	BackfillRounds uint64 // how far below the bootstrap round to go; 0 = to genesis
-	Window         int    // rounds fetched in parallel per backfill step
-	Fetchers       int
+	Window         int    // backfill rounds between cursor checkpoints
+	Fetchers       int    // backfill block requests in flight
 	MaxRefsPerSec  int    // backfill publish budget
 	MaxLiveLag     uint64 // backfill pauses while live is further behind the tip
 	Log            *slog.Logger
@@ -181,8 +181,8 @@ func (s *Scanner) liveLag() uint64 {
 	return tip + 1 - next
 }
 
-// runBackfill walks from next down to floor in windows fetched in parallel,
-// processing each window newest first.
+// runBackfill walks from next down to floor until it gets there, restarting
+// from where it stopped after an error.
 func (s *Scanner) runBackfill(ctx context.Context, next, floor int64) {
 	s.round.WithLabelValues("backfill").Set(float64(next))
 	for ctx.Err() == nil {
@@ -190,52 +190,95 @@ func (s *Scanner) runBackfill(ctx context.Context, next, floor int64) {
 			s.Log.Info("backfill reached its floor", "floor", floor)
 			return
 		}
-		if s.liveLag() > s.MaxLiveLag {
-			sleep(ctx, time.Second)
-			continue
-		}
-		hi, lo := next, max(floor, next-int64(s.Window)+1)
-		start := time.Now()
-		blocks, err := s.window(ctx, uint64(lo), uint64(hi))
-		published := 0
-		for i := len(blocks) - 1; err == nil && i >= 0; i-- {
-			var n int
-			n, err = s.processBlockCounted(ctx, blocks[i], contract.SrcBackfill)
-			published += n
-		}
-		if err == nil {
-			_, err = s.DB.Exec(ctx, `UPDATE scan_state SET backfill_next = $2, updated_at = now() WHERE chain = $1`, s.Chain, lo-1)
-		}
-		if err != nil {
-			if ctx.Err() == nil {
-				s.Log.Error("backfill", "rounds", fmt.Sprintf("%d-%d", lo, hi), "err", err)
-				sleep(ctx, 5*time.Second)
-			}
-			continue
-		}
-		next = lo - 1
-		s.round.WithLabelValues("backfill").Set(float64(next))
-		if s.MaxRefsPerSec > 0 {
-			sleep(ctx, time.Duration(published)*time.Second/time.Duration(s.MaxRefsPerSec)-time.Since(start))
+		if err := s.backfill(ctx, &next, floor); err != nil && ctx.Err() == nil {
+			s.Log.Error("backfill", "round", next, "err", err)
+			sleep(ctx, 5*time.Second)
 		}
 	}
 }
 
-// window fetches rounds lo..hi with s.Fetchers in parallel, in round order.
-func (s *Scanner) window(ctx context.Context, lo, hi uint64) ([]types.Block, error) {
-	out := make([]types.Block, hi-lo+1)
-	errs := make([]error, len(out))
-	sem := make(chan struct{}, max(1, s.Fetchers))
-	var wg sync.WaitGroup
-	for i := range out {
-		sem <- struct{}{}
-		wg.Go(func() {
-			defer func() { <-sem }()
-			out[i], errs[i] = s.block(ctx, s.Blocks, lo+uint64(i))
-		})
+type fetched struct {
+	b   types.Block
+	err error
+}
+
+// backfill applies rounds *next down to floor, newest first. Fetching is a
+// pipeline: s.Fetchers requests are always in flight and a slot frees up as
+// soon as its block arrives, while blocks are applied strictly in round order
+// from a look-ahead of 4×s.Fetchers. A slow block delays only its own turn, not
+// the fetching behind it. *next advances after each applied block and is
+// checkpointed every s.Window rounds; a crash re-applies at most that many,
+// which is harmless.
+func (s *Scanner) backfill(ctx context.Context, next *int64, floor int64) error {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	fetchers := max(1, s.Fetchers)
+	slots := make(chan struct{}, fetchers)
+	queue := make(chan chan fetched, 4*fetchers)
+	from := *next
+	go func() {
+		defer close(queue)
+		for r := from; r >= floor; r-- {
+			res := make(chan fetched, 1)
+			select {
+			case queue <- res:
+			case <-ctx.Done():
+				return
+			}
+			select {
+			case slots <- struct{}{}:
+			case <-ctx.Done():
+				return
+			}
+			go func(r int64) {
+				b, err := s.block(ctx, s.Blocks, uint64(r))
+				<-slots
+				res <- fetched{b, err}
+			}(r)
+		}
+	}()
+
+	applied, published, start := 0, 0, time.Now()
+	checkpoint := func() error {
+		if _, err := s.DB.Exec(ctx, `UPDATE scan_state SET backfill_next = $2, updated_at = now() WHERE chain = $1`, s.Chain, *next); err != nil {
+			return err
+		}
+		s.round.WithLabelValues("backfill").Set(float64(*next))
+		if s.MaxRefsPerSec > 0 {
+			sleep(ctx, time.Duration(published)*time.Second/time.Duration(s.MaxRefsPerSec)-time.Since(start))
+		}
+		applied, published, start = 0, 0, time.Now()
+		return nil
 	}
-	wg.Wait()
-	return out, errors.Join(errs...)
+	for res := range queue {
+		var f fetched
+		select {
+		case f = <-res:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+		if f.err != nil {
+			return f.err
+		}
+		for s.liveLag() > s.MaxLiveLag && ctx.Err() == nil {
+			sleep(ctx, time.Second)
+		}
+		n, err := s.processBlockCounted(ctx, f.b, contract.SrcBackfill)
+		if err != nil {
+			return err
+		}
+		*next = int64(f.b.Round) - 1
+		published += n
+		if applied++; applied >= s.Window {
+			if err := checkpoint(); err != nil {
+				return err
+			}
+		}
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return checkpoint()
 }
 
 // block fetches one block, retrying transient failures (rate limits, restarts).

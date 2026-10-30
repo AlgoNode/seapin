@@ -50,11 +50,11 @@ func run(ctx context.Context, log *slog.Logger) error {
 	if err != nil {
 		return err
 	}
-	live, err := algodClient(cfg.AlgodURL, cfg.AlgodToken, cfg.AlgodReferer)
+	live, err := algodClient(cfg.AlgodURL, cfg.AlgodToken, cfg.AlgodReferer, 8)
 	if err != nil {
 		return err
 	}
-	blocks, err := algodClient(cfg.BlocksURL, cfg.BlocksToken, cfg.BlocksReferer)
+	blocks, err := algodClient(cfg.BlocksURL, cfg.BlocksToken, cfg.BlocksReferer, cfg.Fetchers+8)
 	if err != nil {
 		return err
 	}
@@ -123,12 +123,19 @@ func run(ctx context.Context, log *slog.Logger) error {
 	return err
 }
 
-func algodClient(url, token, referer string) (*algod.Client, error) {
+// algodClient keeps up to conns idle connections to the node: Go's default
+// keeps 2 per host, so most parallel block requests would open a new
+// connection and pay the round trip again (~110 ms per block from Nuremberg).
+func algodClient(url, token, referer string, conns int) (*algod.Client, error) {
 	var headers []*common.Header
 	if referer != "" {
 		headers = append(headers, &common.Header{Key: "Referer", Value: referer})
 	}
-	return algod.MakeClientWithHeaders(url, token, headers)
+	t := http.DefaultTransport.(*http.Transport).Clone()
+	t.MaxIdleConns = 2 * conns
+	t.MaxIdleConnsPerHost = conns
+	t.IdleConnTimeout = 90 * time.Second
+	return algod.MakeClientWithTransport(url, token, headers, t)
 }
 
 // lookup reads an asset's creation parameters from algod; 404 means destroyed.
