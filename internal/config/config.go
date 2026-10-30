@@ -24,6 +24,107 @@ type Config struct {
 	PGDSN           string
 	MissMaxAge      time.Duration // Cache-Control max-age of a 404, so the CDN asks again soon
 	TakedownRefresh time.Duration
+	// The internal listener (other region's fetches, the scanner's asset
+	// reads) is off unless INTERNAL_ADDR is set; it then needs INTERNAL_TOKEN.
+	InternalAddr  string
+	InternalToken string
+}
+
+// Ingest holds what `seapin ingest` needs on top of Config.
+type Ingest struct {
+	Region      string // eu | us; the queue is seapin.<region>
+	RMQURL      string
+	QueueType   string // "" (classic) or "quorum"
+	QueueMaxLen int64
+	Prefetch    int
+	Addr        string // /health and /metrics
+	KuboURL     string
+	PeerURL     string // the other region's internal listener; optional
+	PeerToken   string
+	PinataURL   string // optional last source, slow lanes only
+	PinataToken string
+
+	FastSlots, SlowSlots, BackfillSlots         int
+	FastTTFB, SlowTTFB, BackfillTTFB, RetryTTFB time.Duration
+}
+
+// LoadIngest reads Config plus the ingest settings.
+func LoadIngest() (Config, Ingest, error) {
+	c, err := Load()
+	if err != nil {
+		return c, Ingest{}, err
+	}
+	p := parser{}
+	in := Ingest{
+		Region:      p.need("REGION"),
+		RMQURL:      p.need("RMQ_URL"),
+		QueueType:   os.Getenv("QUEUE_TYPE"),
+		QueueMaxLen: int64(p.int("QUEUE_MAX_LENGTH", 10_000_000)),
+		Prefetch:    p.int("PREFETCH", 256),
+		Addr:        envOr("INGEST_ADDR", "127.0.0.1:8091"),
+		KuboURL:     envOr("KUBO_URL", "http://127.0.0.1:8080"),
+		PeerURL:     os.Getenv("PEER_URL"),
+		PeerToken:   os.Getenv("PEER_TOKEN"),
+		PinataURL:   os.Getenv("PINATA_URL"),
+		PinataToken: os.Getenv("PINATA_TOKEN"),
+
+		FastSlots:     p.int("FAST_SLOTS", 48),
+		SlowSlots:     p.int("SLOW_SLOTS", 16),
+		BackfillSlots: p.int("BACKFILL_SLOTS", 32),
+		FastTTFB:      p.dur("FAST_TTFB", 10*time.Second),
+		SlowTTFB:      p.dur("SLOW_TTFB", 120*time.Second),
+		BackfillTTFB:  p.dur("BACKFILL_TTFB", 10*time.Second),
+		RetryTTFB:     p.dur("BACKFILL_RETRY_TTFB", 120*time.Second),
+	}
+	if in.PeerURL != "" && in.PeerToken == "" {
+		p.errs = append(p.errs, "PEER_URL needs PEER_TOKEN")
+	}
+	if in.PinataURL != "" && in.PinataToken == "" {
+		p.errs = append(p.errs, "PINATA_URL needs PINATA_TOKEN")
+	}
+	return c, in, p.err()
+}
+
+// parser collects every problem with the environment into one error.
+type parser struct{ errs []string }
+
+func (p *parser) need(key string) string {
+	v := os.Getenv(key)
+	if v == "" {
+		p.errs = append(p.errs, "missing "+key)
+	}
+	return v
+}
+
+func (p *parser) int(key string, fallback int) int {
+	v := os.Getenv(key)
+	if v == "" {
+		return fallback
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil || n < 0 {
+		p.errs = append(p.errs, key+": not a non-negative integer")
+	}
+	return n
+}
+
+func (p *parser) dur(key string, fallback time.Duration) time.Duration {
+	v := os.Getenv(key)
+	if v == "" {
+		return fallback
+	}
+	d, err := time.ParseDuration(v)
+	if err != nil {
+		p.errs = append(p.errs, key+": "+err.Error())
+	}
+	return d
+}
+
+func (p *parser) err() error {
+	if len(p.errs) == 0 {
+		return nil
+	}
+	return fmt.Errorf("environment: %s", strings.Join(p.errs, "; "))
 }
 
 // Load reads the environment. Endpoints and credentials have no defaults:
@@ -59,6 +160,10 @@ func Load() (Config, error) {
 	}
 	if c.TakedownRefresh, err = time.ParseDuration(envOr("TAKEDOWN_REFRESH", "60s")); err != nil {
 		return c, fmt.Errorf("TAKEDOWN_REFRESH: %w", err)
+	}
+	c.InternalAddr, c.InternalToken = os.Getenv("INTERNAL_ADDR"), os.Getenv("INTERNAL_TOKEN")
+	if c.InternalAddr != "" && len(c.InternalToken) < 32 {
+		return c, fmt.Errorf("INTERNAL_ADDR needs an INTERNAL_TOKEN of at least 32 characters")
 	}
 	return c, nil
 }

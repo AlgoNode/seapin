@@ -31,6 +31,7 @@ type Store interface {
 type Catalog interface {
 	Lookup(ctx context.Context, cid string) (catalog.Object, bool, error)
 	ResolveAlias(ctx context.Context, root, subpath string) (string, bool, error)
+	AssetObjects(ctx context.Context, chain string, asset uint64) ([]catalog.AssetObject, error)
 	Ping(ctx context.Context) error
 }
 

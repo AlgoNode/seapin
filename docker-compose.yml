@@ -6,6 +6,10 @@
 #   ./scripts/dev-init.sh                  # once: .env (secrets, 0600) + dev/s3.json
 #   docker compose up -d --build
 #   docker compose run --rm seapin-tool seed <cid> /seed/<file>   # file in ./dev/seed
+#
+# Also: RabbitMQ (AMQP 127.0.0.1:21672, management :21673), kubo (gateway :21880,
+# offline: it serves only what `ipfs add` put in it), seapin-ingest (metrics and
+# health :21091) and serve's internal listener (:21092, bearer INTERNAL_TOKEN).
 name: seapin-dev
 
 x-common: &common
@@ -105,10 +109,89 @@ services:
       <<: *seapin-env
       S3_ACCESS_KEY: ${SERVE_S3_ACCESS_KEY:?}
       S3_SECRET_KEY: ${SERVE_S3_SECRET_KEY:?}
+      INTERNAL_ADDR: 127.0.0.1:21092
+      INTERNAL_TOKEN: ${INTERNAL_TOKEN:?run scripts/dev-init.sh}
     depends_on:
       seapin-migrate: {condition: service_completed_successfully}
     healthcheck:
       test: ["CMD", "/seapin", "health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  rabbitmq:
+    <<: *common
+    image: rabbitmq:4.3.7-management-alpine
+    container_name: seapin-dev-rabbitmq
+    user: "1000:1000"
+    mem_limit: 1g
+    # Host network: Erlang's epmd and distribution ports would listen on every
+    # interface by default; these pin them to loopback too.
+    environment:
+      RABBITMQ_NODENAME: rabbit@localhost
+      ERL_EPMD_ADDRESS: 127.0.0.1
+      ERL_EPMD_PORT: "21369"
+      RABBITMQ_DIST_PORT: "31672"
+      RABBITMQ_SERVER_ADDITIONAL_ERL_ARGS: "-kernel inet_dist_use_interface {127,0,0,1}"
+      RABBITMQ_DEFAULT_USER: seapin
+      RABBITMQ_DEFAULT_PASS: ${RMQ_PASSWORD:?run scripts/dev-init.sh}
+    volumes:
+      - ./dev/rabbitmq:/var/lib/rabbitmq
+      - ./deploy/dev/rabbitmq.conf:/etc/rabbitmq/conf.d/90-seapin.conf:ro
+    tmpfs: [/tmp]
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 10s
+      timeout: 10s
+      retries: 12
+
+  # Dev kubo runs offline: it serves only what was added locally, so tests are
+  # deterministic and the workstation joins no network. Production drops
+  # --offline and keeps the default swarm addresses (deploy/kubo/001-seapin.sh).
+  kubo:
+    <<: *common
+    image: ipfs/kubo:v0.43.1
+    container_name: seapin-dev-kubo
+    user: "1000:1000"
+    mem_limit: 2g
+    command: ["daemon", "--migrate=true", "--enable-gc", "--offline"]
+    environment:
+      IPFS_PATH: /data/ipfs
+      KUBO_GATEWAY_PORT: "21880"
+      KUBO_API_PORT: "21850"
+      KUBO_SWARM_ADDRESSES: "[]"
+      KUBO_STORAGE_MAX: 5GB
+    volumes:
+      - ./dev/kubo:/data/ipfs
+      - ./deploy/kubo/001-seapin.sh:/container-init.d/001-seapin.sh:ro
+      - ./dev/seed:/seed:ro
+    tmpfs: [/tmp]
+    healthcheck:
+      test: ["CMD", "ipfs", "id"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+  seapin-ingest:
+    <<: *common
+    image: seapin:dev
+    container_name: seapin-dev-ingest
+    mem_limit: 1g
+    command: ["ingest"]
+    environment:
+      <<: *seapin-env
+      S3_ACCESS_KEY: ${INGEST_S3_ACCESS_KEY:?}
+      S3_SECRET_KEY: ${INGEST_S3_SECRET_KEY:?}
+      REGION: dev
+      RMQ_URL: amqp://seapin:${RMQ_PASSWORD:?}@127.0.0.1:21672/
+      KUBO_URL: http://127.0.0.1:21880
+      INGEST_ADDR: 127.0.0.1:21091
+    depends_on:
+      seapin-migrate: {condition: service_completed_successfully}
+      rabbitmq: {condition: service_healthy}
+      kubo: {condition: service_healthy}
+    healthcheck:
+      test: ["CMD", "/seapin", "health", "127.0.0.1:21091"]
       interval: 10s
       timeout: 5s
       retries: 3

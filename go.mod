@@ -3,6 +3,7 @@ module seapin
 go 1.27
 
 require (
+	github.com/algorand/go-algorand-sdk/v2 v2.14.0
 	github.com/gabriel-vasile/mimetype v1.4.16
 	github.com/ipfs/go-cid v0.6.0
 	github.com/jackc/pgx/v5 v5.11.0
@@ -10,9 +11,11 @@ require (
 	github.com/multiformats/go-multibase v0.3.0
 	github.com/multiformats/go-multihash v0.2.3
 	github.com/prometheus/client_golang v1.25.0
+	github.com/rabbitmq/amqp091-go v1.16.0
 )
 
 require (
+	github.com/algorand/go-codec/codec v1.1.10 // indirect
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect

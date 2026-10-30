@@ -411,7 +411,8 @@ M1 and M3 can run in parallel once M0's contract is frozen; M3's `x_asset_meta` 
 - [ ] Spike: kubo vs rainbow on ~1k real CIDs (success rate, p50/p95, RAM); pick the fetch sidecar (D1). Also
       measure: the time-to-first-byte distribution of successful fetches (sets the fast-lane cutoff), the share of
       dead CIDs in a historical sample (sizes the backfill), and the sidecar's concurrency ceiling (caps total slots).
-- [ ] Freeze message contract v1; settle D1 and D6 (§4).
+- [x] Freeze message contract v1: `internal/contract` (ref, takedown, object event) with validation and tests. — 2026-10-30
+- [ ] Settle D1 and D6 (§4).
 - [ ] Confirm how the indexers' GraphQL gets `x_asset_meta` (an fdw to the etl Postgres?) and who else reads it or
       the `log` exchange.
 - [ ] Measure blksrv backfill throughput (rounds/s at 8, 16 and 32 parallel fetchers).
@@ -446,22 +447,50 @@ refused at seed time (403, catalog row `blocked not_allowed:text/html`). HTML pl
 policy's back also gets 403. A takedown gives 451, an unknown CID 404 (60 s), and the serve identity's PUT 403. Unit,
 race and catalog tests pass.
 
-### M2: catalog, ingest worker and fetch sidecar
-- [x] Postgres schema and migrations (§1): shipped with M1 (`0001_init.sql`); the `asset_objects` view comes with link extraction below. — 2026-10-30
-- [ ] Intake: consume `seapin.<region>`, upsert ref + object, ack. It never fetches (§1 Ingest scheduling).
-- [ ] Scheduler: lanes with their own worker pools, leases, per-creator round-robin and caps, retry ladder,
-      TTFB/stall/rate deadlines.
-- [ ] Fetch chain (§1) with singleflight and the size cap.
-- [ ] Sniff the first bytes, then stream into S3 (multipart for large objects).
-- [ ] Directory and path resolution via kubo (`X-Ipfs-Roots` / ETag → leaf CID → `aliases`).
-- [ ] JSON link extraction into `links`, child enqueue within the depth and fan-out bounds, `asset_objects` view,
-      `/internal/assets/<chain>/<asset>`; object outcome events to `seapin.events`.
-- [ ] Kubo or rainbow sidecar compose, fetch-only config.
-- [ ] Metrics: queue lag, fetch outcome by source, blocked by reason, bytes stored per day.
+### M2: catalog, ingest worker and fetch sidecar — done 2026-10-30 (dev), branch `m1-serve-path`
+- [x] Postgres schema and migrations (§1): `0001_init.sql` with M1. `0002_ingest.sql` adds the work queue
+      `fetches` (one row per root CID + path; the leaf is only known after the fetch) and the
+      `asset_objects(chain, asset)` function. — 2026-10-30
+- [x] Intake: consumes `seapin.<region>` (declares the fanout exchange and the queue with `x-max-length` +
+      `drop-head`), applies refs (newest round per key wins, superseded rounds queue nothing) and takedowns, then
+      acks. It never fetches. — 2026-10-30
+- [x] Scheduler: one worker pool per lane; fair claims in SQL (one per creator per pass) plus per-creator caps
+      (fast 4, slow 2); leases outlast the deadlines; retry ladder fast → slow (+5 min … +7 d) → `failed`; live
+      demand promotes waiting backfill fetches; a failed fetch is re-armed at most once per 30 days. — 2026-10-30
+- [x] Fetch chain: peer (404 = not here) → kubo → Pinata (slow lanes only). Deadlines measure progress: first byte
+      per lane, then a 15 s stall, 32 KiB/s after 30 s, a 10 min ceiling. One fetch per root+path via the table's
+      key and lease. — 2026-10-30
+- [x] Sniff the first 4096 bytes before anything reaches S3; then stream with the 256 MiB cap. S3 multipart uses
+      8 MiB parts, one thread, so concurrent uploads stay bounded in memory. — 2026-10-30
+- [x] Directory and path resolution: leaf CID from `X-Ipfs-Roots` (last) or a CID ETag → `aliases`. Directory
+      listings (ETag `DirIndex-`) are blocked as `directory`. — 2026-10-30
+- [x] JSON link extraction (`internal/arcmeta`: any explicit IPFS link, well-known ARC fields first, ≤ 32) into
+      `links`. Children are queued within 3 hops, inheriting creator and lane. `/internal/assets/<chain>/<asset>`
+      and `/internal/ipfs/` are served on the token-protected internal listener. Outcome events go to
+      `seapin.events` (`<region>.<status>`). — 2026-10-30
+- [x] Kubo sidecar: `deploy/kubo/001-seapin.sh` (loopback gateway/API, `Routing.Type=autoclient`,
+      `Provide.Enabled=false`, 50 GB GC'd blockstore, kubo's own timeouts above ours); the dev stack runs it
+      offline. — 2026-10-30
+- [x] Metrics: fetches by lane/outcome, duration histogram, stored bytes by source, in-flight, pending and oldest
+      due per lane, queue messages by result. — 2026-10-30
 
-Exit: replaying 10k real references fills S3 and the catalog; a second replay fetches 0 bytes; no blocked type ever
-lands in S3. With 10k unfetchable CIDs from one creator queued, a well-pinned live CID still caches within about one
-fast-lane TTFB.
+Exit:
+- Met on dev, 2026-10-30:
+  - metadata JSON → image + file inside a directory cached; HTML 403; nothing refused is stored
+  - re-published refs cost no fetch
+  - unfetchable CID → slow lane, next try +5 min
+  - events and `/internal/assets` correct (`scripts/dev-smoke-ingest.sh`)
+  - flood test against real Postgres: 300 hanging CIDs from one creator, another creator's CID cached 56 ms after
+    it was queued
+- Still open: the replay of 10k *real* references needs M3's scanner and an online kubo; it runs with the M0 spike.
+
+Found while building M2:
+- kubo answers 404 both for a path missing from a resolved directory (`no link named …`, final) and for a block
+  it cannot get (`block was not found …`, may appear later). Only the first is treated as permanent.
+- RabbitMQ 4 refuses transient non-exclusive queues; every queue we declare is durable.
+- On host networking, RabbitMQ's Erlang epmd and distribution ports listen on all interfaces unless
+  `ERL_EPMD_ADDRESS`, `RABBITMQ_DIST_PORT` and `inet_dist_use_interface` pin them (dev compose does). Production
+  RabbitMQ is the existing cluster; this only matters for a local broker.
 
 ### M3: scanner rewrite (§1 Scanner; replaces algoipfssvc)
 - [ ] Block reader: algod for live, blksrv for backfill (parallel, descending windows); inner transactions; created

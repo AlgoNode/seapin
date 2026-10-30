@@ -53,6 +53,7 @@ func (f *fakeStore) Ping(context.Context) error { return nil }
 type fakeCatalog struct {
 	objs    map[string]catalog.Object
 	aliases map[string]string // root + "/" + subpath -> leaf
+	assets  []catalog.AssetObject
 	err     error
 }
 
@@ -73,6 +74,10 @@ func (f *fakeCatalog) ResolveAlias(_ context.Context, root, sub string) (string,
 }
 
 func (f *fakeCatalog) Ping(context.Context) error { return f.err }
+
+func (f *fakeCatalog) AssetObjects(context.Context, string, uint64) ([]catalog.AssetObject, error) {
+	return f.assets, f.err
+}
 
 func rawCID(t *testing.T, data string) (v1 string, v0 string) {
 	t.Helper()

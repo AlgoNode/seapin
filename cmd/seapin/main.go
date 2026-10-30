@@ -1,9 +1,10 @@
 // Command seapin is the IPFS cache gateway (PLAN.md).
 //
 //	seapin serve               answer /ipfs/ requests from the region's bucket
+//	seapin ingest              consume references, fetch and store objects (lanes, kubo sidecar)
 //	seapin migrate             apply the catalog schema and create the bucket
 //	seapin seed <cid> <file>   store a local file under a CID (operator tool; the content policy applies)
-//	seapin health              exit 0 when the local server's /health is 200 (container healthcheck)
+//	seapin health [addr]       exit 0 when /health on addr (default LISTEN_ADDR) is 200 (container healthcheck)
 package main
 
 import (
@@ -41,12 +42,14 @@ func main() {
 	switch os.Args[1] {
 	case "serve":
 		err = runServe(ctx, log)
+	case "ingest":
+		err = runIngest(ctx, log)
 	case "migrate":
 		err = runMigrate(ctx, log)
 	case "seed":
 		err = runSeed(ctx, log, os.Args[2:])
 	case "health":
-		err = runHealth()
+		err = runHealth(os.Args[2:])
 	case "version":
 		fmt.Println(version)
 	default:
@@ -59,7 +62,7 @@ func main() {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: seapin serve | migrate | seed <cid> <file> | health | version")
+	fmt.Fprintln(os.Stderr, "usage: seapin serve | ingest | migrate | seed <cid> <file> | health [addr] | version")
 	os.Exit(2)
 }
 
@@ -103,19 +106,38 @@ func runServe(ctx context.Context, log *slog.Logger) error {
 		MaxHeaderBytes:    16 << 10,
 		// No WriteTimeout: a large video to a slow client legitimately takes minutes.
 	}
-	errc := make(chan error, 1)
-	go func() { errc <- srv.ListenAndServe() }()
-	log.Info("serving", "addr", cfg.ListenAddr, "version", version)
+	servers := []*http.Server{srv}
+	if cfg.InternalAddr != "" {
+		servers = append(servers, &http.Server{
+			Addr:              cfg.InternalAddr,
+			Handler:           h.InternalRoutes(cfg.InternalToken),
+			ReadHeaderTimeout: 10 * time.Second,
+			ReadTimeout:       30 * time.Second,
+			IdleTimeout:       120 * time.Second,
+		})
+	}
+	log.Info("serving", "addr", cfg.ListenAddr, "internal", cfg.InternalAddr, "version", version)
+	return listen(ctx, log, servers...)
+}
 
+// listen runs the servers until ctx ends or one fails, then shuts all down.
+func listen(ctx context.Context, log *slog.Logger, servers ...*http.Server) error {
+	errc := make(chan error, len(servers))
+	for _, s := range servers {
+		go func() { errc <- s.ListenAndServe() }()
+	}
+	var err error
 	select {
-	case err := <-errc:
-		return err
+	case err = <-errc:
 	case <-ctx.Done():
 	}
 	log.Info("shutting down")
 	sctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
-	return srv.Shutdown(sctx)
+	for _, s := range servers {
+		s.Shutdown(sctx)
+	}
+	return err
 }
 
 func runMigrate(ctx context.Context, log *slog.Logger) error {
@@ -142,8 +164,11 @@ func runMigrate(ctx context.Context, log *slog.Logger) error {
 	return nil
 }
 
-func runHealth() error {
+func runHealth(args []string) error {
 	addr := config.ListenAddr()
+	if len(args) > 0 {
+		addr = args[0]
+	}
 	if strings.HasPrefix(addr, ":") {
 		addr = "127.0.0.1" + addr
 	}

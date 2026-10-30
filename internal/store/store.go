@@ -70,8 +70,15 @@ func (s *Store) GetRange(ctx context.Context, key string, off int64) (io.ReadClo
 	return body, nil
 }
 
+// Put streams r into the bucket; size may be -1 when unknown. Large objects go
+// up in 8 MiB parts one at a time, so many concurrent uploads stay cheap in
+// memory.
 func (s *Store) Put(ctx context.Context, key string, r io.Reader, size int64, contentType string) error {
-	_, err := s.c.PutObject(ctx, s.bucket, key, r, size, minio.PutObjectOptions{ContentType: contentType})
+	_, err := s.c.PutObject(ctx, s.bucket, key, r, size, minio.PutObjectOptions{
+		ContentType: contentType,
+		PartSize:    8 << 20,
+		NumThreads:  1,
+	})
 	return err
 }
 

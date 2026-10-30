@@ -100,7 +100,7 @@ func (c *Catalog) MarkCached(ctx context.Context, cid, mime string, size int64, 
 		VALUES ($1, 'cached', $2, $3, now(), $4)
 		ON CONFLICT (cid) DO UPDATE
 		SET status = 'cached', mime = $2, size = $3, reason = NULL,
-		    cached_at = now(), source = $4, lease_until = NULL`,
+		    cached_at = now(), source = $4`,
 		cid, mime, size, source)
 	return err
 }
@@ -112,7 +112,7 @@ func (c *Catalog) MarkBlocked(ctx context.Context, cid, detected string, size in
 		INSERT INTO objects (cid, status, mime, size, reason)
 		VALUES ($1, 'blocked', $2, $3, $4)
 		ON CONFLICT (cid) DO UPDATE
-		SET status = 'blocked', mime = $2, size = $3, reason = $4, lease_until = NULL
+		SET status = 'blocked', mime = $2, size = $3, reason = $4
 		WHERE objects.status <> 'cached'`,
 		cid, detected, size, reason)
 	return err

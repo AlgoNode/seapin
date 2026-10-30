@@ -4,8 +4,10 @@ IPFS cache gateway for Algorand assets. Each region (EU, US) keeps its own Seawe
 every IPFS object Algorand ASAs reference. Only content on an allowlist is stored. Anything not cached is a 404:
 seapin never fetches from IPFS while serving. Design, decisions and milestones: [PLAN.md](PLAN.md).
 
-**Status:** M1 done: the read path (`seapin serve`). Next is M2: ingest (queue consumer, lanes, fetch sidecar) and
-JSON link following. The scanner rewrite (`cmd/seapin-scan`) is M3.
+**Status:**
+- M1 (the read path, `seapin serve`) and M2 (ingest: queue consumer, fetch lanes, kubo sidecar, JSON link following)
+  are done on the dev stack.
+- The scanner rewrite (`cmd/seapin-scan`, M3) is next.
 
 ## What `serve` answers
 
@@ -33,13 +35,18 @@ Content policy (`internal/policy`): the type is sniffed from the bytes, never ta
 ## Layout
 
 ```
-cmd/seapin          serve | migrate | seed <cid> <file> | health | version
+cmd/seapin          serve | ingest | migrate | seed <cid> <file> | health [addr] | version
 internal/cidkey     CID parsing, CIDv1 base32 normalization, S3 key, sub-path validation, raw-CID verification
 internal/policy     sniffing, allowlist, size cap, security headers
 internal/store      S3 (SeaweedFS) access: stat, ranged reads, put, bucket
 internal/catalog    Postgres catalog + embedded migrations (internal/catalog/migrations)
-internal/serve      HTTP handler, ranged object reader, in-memory takedown list
+internal/serve      HTTP handler, ranged object reader, in-memory takedown list, internal listener
+internal/contract   wire format v1: refs and takedowns (exchange "seapin"), object events ("seapin.events")
+internal/arcmeta    IPFS references in ASA URLs (ARC-3 {id}, ARC-19 templates), ARC-69 notes, links in JSON
+internal/fetch      one object from peer → kubo → Pinata, with progress deadlines, policy and size cap
+internal/ingest     intake (queue → catalog), per-lane scheduler, events
 internal/config     environment
+deploy/kubo         kubo container-init script: fetch-only, loopback, GC'd
 ```
 
 ## Dev stack
@@ -52,6 +59,7 @@ All listeners are on loopback in the 21xxx/31xxx range: SeaweedFS (S3 on 21833),
 docker compose up -d --build          # seaweedfs, postgres, seapin-migrate (one-shot), seapin
 docker compose run --rm seapin-tool seed <cid> /seed/<file>   # put the file in ./dev/seed first
 ./scripts/dev-smoke.sh                # end-to-end check of the serve path
+./scripts/dev-smoke-ingest.sh         # end-to-end check of ingest (kubo → queue → lanes → bucket → gateway)
 ```
 
 `seed` applies the same policy as ingest will. It verifies raw-codec CIDs against the file; dag-pb CIDs depend on
@@ -71,6 +79,14 @@ the original chunking, so for those the operator vouches. S3 identities:
 | `PG_DSN` | required | catalog Postgres |
 | `MISS_MAX_AGE` | `60s` | `Cache-Control` max-age of a 404 |
 | `TAKEDOWN_REFRESH` | `60s` | how often the takedown list is reloaded; `serve` won't start until it has loaded once |
+| `INTERNAL_ADDR`, `INTERNAL_TOKEN` | off | `serve`'s internal listener (`/internal/ipfs/`, `/internal/assets/`); token ≥ 32 chars |
+| `REGION`, `RMQ_URL` | required for `ingest` | consumes queue `seapin.<REGION>` |
+| `KUBO_URL` | `http://127.0.0.1:8080` | fetch sidecar gateway |
+| `PEER_URL` + `PEER_TOKEN`, `PINATA_URL` + `PINATA_TOKEN` | off | other region's internal listener; Pinata (slow lanes only) |
+| `FAST_SLOTS` / `SLOW_SLOTS` / `BACKFILL_SLOTS` | 48 / 16 / 32 | workers per lane |
+| `FAST_TTFB` / `SLOW_TTFB` / `BACKFILL_TTFB` / `BACKFILL_RETRY_TTFB` | 10s / 120s / 10s / 120s | first-byte deadlines |
+| `QUEUE_TYPE`, `QUEUE_MAX_LENGTH`, `PREFETCH` | classic, 10 M, 256 | the region queue |
+| `INGEST_ADDR` | `127.0.0.1:8091` | ingest `/health` and `/metrics` |
 
 ## Tests
 

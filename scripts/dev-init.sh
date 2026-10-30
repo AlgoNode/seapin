@@ -6,7 +6,7 @@ set -eu
 cd "$(dirname "$0")/.."
 umask 077
 
-mkdir -p dev/seaweed dev/postgres dev/seed
+mkdir -p dev/seaweed dev/postgres dev/seed dev/rabbitmq dev/kubo
 
 rand() { od -An -tx1 -N"$1" /dev/urandom | tr -d ' \n'; }
 
@@ -20,6 +20,9 @@ INGEST_S3_SECRET_KEY=$(rand 24)
 EOF
 	echo "wrote .env"
 fi
+# Secrets added after the first version of this script.
+grep -q '^RMQ_PASSWORD=' .env || echo "RMQ_PASSWORD=$(rand 24)" >> .env
+grep -q '^INTERNAL_TOKEN=' .env || echo "INTERNAL_TOKEN=$(rand 24)" >> .env
 . ./.env
 
 # serve may only read; ingest (and migrate/seed) also writes and creates the bucket.
