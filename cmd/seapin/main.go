@@ -96,6 +96,10 @@ func runServe(ctx context.Context, log *slog.Logger) error {
 		Log:        log,
 		Registry:   reg,
 		MissMaxAge: cfg.MissMaxAge,
+
+		DemandHeader:     cfg.DemandHeader,
+		DemandWait:       cfg.DemandWait,
+		DemandMaxWaiters: cfg.DemandMaxWaiters,
 	})
 	srv := &http.Server{
 		Addr:              cfg.ListenAddr,

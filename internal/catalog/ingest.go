@@ -331,7 +331,7 @@ func (c *Catalog) LaneStats(ctx context.Context) (map[string]LaneStat, error) {
 	if err != nil {
 		return nil, err
 	}
-	stats := map[string]LaneStat{LaneFast: {}, LaneSlow: {}, LaneBackfill: {}}
+	stats := map[string]LaneStat{LaneFast: {}, LaneSlow: {}, LaneBackfill: {}, LaneDemand: {}}
 	var lane string
 	var n int64
 	var secs float64

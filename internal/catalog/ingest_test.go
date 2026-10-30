@@ -177,3 +177,53 @@ func TestIngestQueue(t *testing.T) {
 		t.Errorf("lane stats: %+v %v", stats, err)
 	}
 }
+
+func TestDemand(t *testing.T) {
+	c := openTest(t)
+	ctx := context.Background()
+	if err := c.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	got := make(chan string, 4)
+	lctx, stop := context.WithCancel(ctx)
+	defer stop()
+	go c.Notifications(lctx, func(lane string) { got <- lane })
+	time.Sleep(200 * time.Millisecond) // LISTEN is in place
+
+	if st, err := c.FetchState(ctx, "bafy-u", ""); err != nil || st.Found {
+		t.Fatalf("unknown fetch: %+v %v", st, err)
+	}
+	if err := c.Demand(ctx, "bafy-u", "", "site:nft.example"); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case lane := <-got:
+		if lane != LaneDemand {
+			t.Errorf("notified lane %q", lane)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("no NOTIFY")
+	}
+	jobs := claimAll(t, c, LaneDemand, 10, nil, true)
+	if len(jobs) != 1 || jobs[0].Creator != "site:nft.example" || jobs[0].Depth != MaxDepth {
+		t.Fatalf("demand job %+v", jobs)
+	}
+	// Its links are recorded but not followed: depth is already MaxDepth.
+	n, err := c.Complete(ctx, jobs[0], Outcome{Leaf: "bafy-u", Status: StatusCached, Mime: "application/json",
+		Links: []Link{{Path: "image", CID: "bafk-child"}}})
+	if err != nil || n != 0 {
+		t.Errorf("demand JSON queued %d children (%v)", n, err)
+	}
+	if st, _ := c.FetchState(ctx, "bafy-u", ""); st.Status != "done" || st.Leaf != "bafy-u" {
+		t.Errorf("state after completion %+v", st)
+	}
+
+	// A waiting backfill fetch moves to the demand lane.
+	c.ApplyRef(ctx, ref(50, "url", "bafy-bf", "", "Z", "backfill", 1))
+	if err := c.Demand(ctx, "bafy-bf", "", "site:x"); err != nil {
+		t.Fatal(err)
+	}
+	if st, _ := c.FetchState(ctx, "bafy-bf", ""); st.Lane != LaneDemand {
+		t.Errorf("backfill fetch not promoted: %+v", st)
+	}
+}

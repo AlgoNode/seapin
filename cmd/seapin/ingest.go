@@ -61,6 +61,8 @@ func runIngest(ctx context.Context, log *slog.Logger) error {
 			lanes[i].Slots, lanes[i].TTFB, lanes[i].RetryTTFB = ing.SlowSlots, ing.SlowTTFB, ing.SlowTTFB
 		case catalog.LaneBackfill:
 			lanes[i].Slots, lanes[i].TTFB, lanes[i].RetryTTFB = ing.BackfillSlots, ing.BackfillTTFB, ing.RetryTTFB
+		case catalog.LaneDemand:
+			lanes[i].Slots, lanes[i].TTFB, lanes[i].RetryTTFB = ing.DemandSlots, ing.DemandTTFB, ing.DemandTTFB
 		}
 	}
 
@@ -101,6 +103,17 @@ func runIngest(ctx context.Context, log *slog.Logger) error {
 	var wg sync.WaitGroup
 	wg.Go(func() { sched.Run(ctx) })
 	wg.Go(func() { intake.Run(ctx) })
+	wg.Go(func() { // serve's read-through queues fetches and NOTIFYs; wake the lane at once
+		for ctx.Err() == nil {
+			if err := cat.Notifications(ctx, sched.Kick); err != nil && ctx.Err() == nil {
+				log.Warn("fetch notifications, reconnecting", "err", err)
+				select {
+				case <-ctx.Done():
+				case <-time.After(5 * time.Second):
+				}
+			}
+		}
+	})
 	err = listen(ctx, log, srv)
 	wg.Wait()
 	if errors.Is(err, http.ErrServerClosed) {

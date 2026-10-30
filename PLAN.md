@@ -431,7 +431,13 @@ M1 and M3 can run in parallel once M0's contract is frozen; M3's `x_asset_meta` 
       `graphql.asset`/`asset_meta`/`nft_meta()`, `ch.asset(_live)`, `xv_asset_cids`, the public Grafana IPFS
       panels. The fdw `ipfsmeta` is a dead leftover. RabbitMQ `an.hdr.ipfs.log` is bound only to `an.ipfs.db`
       (no static/discord queues). — 2026-10-30
-- [ ] Measure blksrv backfill throughput (rounds/s at 8, 16 and 32 parallel fetchers).
+- [x] blksrv throughput (operator: "go wild (32)"):
+      - setup: 32 parallel msgpack block reads on htz-fi-hel-tmp itself (127.0.0.1:3889), cold deep-history rounds,
+        host already at load 6–13 on 16 cores
+      - results: 937 / 737 / 848 rounds/s at rounds 15 M / 35 M / 55 M (blocks 41 / 125 / 81 KB, 38–92 MB/s,
+        p95 35–70 ms, 12,000 of 12,000 OK)
+      - **a full 66.5 M-round backfill takes about a day**; network to the EU VM comes on top
+      - a second mainnet blksrv runs on net-us-ash-usj — 2026-10-30
 - [x] Registry: seapin `status: active` — 2026-10-30 (`_registry` 94248c4).
 - [ ] Registry `deps` (RabbitMQ, algod, blksrv, the etl Postgres for `x_asset_meta`), each added when the code starts using it (M2/M3).
 
@@ -484,6 +490,9 @@ race and catalog tests pass.
       `links`. Children are queued within 3 hops, inheriting creator and lane. `/internal/assets/<chain>/<asset>`
       and `/internal/ipfs/` are served on the token-protected internal listener. Outcome events go to
       `seapin.events` (`<region>.<status>`). — 2026-10-30
+- [x] Read-through lane `demand` (D2 revised; `0003_demand.sql`): serve queues the fetch and NOTIFYs ingest, which
+      LISTENs and wakes the lane; 32 slots, 10 s first byte, ≤ 8 slots per site; failures go down the slow-lane
+      ladder. Dev: an unreferenced PNG was served 0.26 s after a whitelisted request. — 2026-10-30
 - [x] Kubo sidecar: `deploy/kubo/001-seapin.sh` (loopback gateway/API, `Routing.Type=autoclient`,
       `Provide.Enabled=false`, 50 GB GC'd blockstore, kubo's own timeouts above ours); the dev stack runs it
       offline. — 2026-10-30
@@ -596,10 +605,10 @@ Decided by the operator on 2026-10-30:
 |---|---|---|---|
 | R | Replication | event fanout + peer-first fetch + daily anti-entropy (§2) | no SeaweedFS coupling between regions |
 | K | Catalog key | `<chain>/<asset>/<where the reference sits>` (§1) | one key per reference; the IPFS sub-path is a separate column |
-| D2 | Request for a CID that is not cached | 404. The only exception is proxying from the peer region's cache during replication lag; unreferenced CIDs are never fetched or stored | the serve path never touches IPFS; scanner coverage decides what users can get. **M0 measured the cost: ~21.6% of today's successful requests (16.2% of distinct CIDs, 3.2% of bytes) are for CIDs no ASA references, so revisit before cutover** |
+| D2 | Request for a CID that is not cached (revised 2026-10-30 after M0) | **read-through for whitelisted referers, strict 404 for everyone else**. openresty marks whitelisted requests with `X-Seapin-Whitelisted: 1` (and `X-Seapin-Site`); seapin queues the fetch in the `demand` lane (fair per site) and waits ≤ 20 s, else 504 + `Retry-After`. A CID whose first attempt failed answers 404 at once while the ladder retries it in the background. Read-through objects are cached (their JSON links are recorded, not followed). Peer-region proxying during replication lag stays | covers the 21.6% of today's successful requests no ASA references; growth stays small (≤ ~3.4 GB/day at today's served bytes); dead CIDs cost one fetch, not one per request |
 | D3 | Allowlist and size cap | §1 list plus SVG and GLB; PDF and plain text blocked; 256 MiB cap | larger objects are recorded as `too_large` |
 | D4 | SVG | allowed, always served with CSP `sandbox` + `nosniff` | scripts inside an SVG cannot run |
-| D5 | Front proxy | keep openresty (whitelist, apilog `$flg`) | seapin listens on 127.0.0.1 only |
+| D5 | Front proxy | keep openresty (whitelist, apilog `$flg`) | seapin listens on 127.0.0.1 only. openresty must **always set** `X-Seapin-Whitelisted` (`$allowed_referer` → `1`/`0`, overriding any client value) and `X-Seapin-Site` (referer host, or a name for UA-whitelisted apps such as Pera). Whether non-whitelisted referers keep today's 403 for cached content or get cached-only access is openresty's choice; seapin works either way |
 | D7 | Pinata | last ingest fetch source until M6, then review | its token moves to seapin's `.env`; rotation pending (§0) |
 | D9 | Where the new scanner lives | `cmd/seapin-scan` in this repo, sharing `cidkey`, `arcmeta` and the contract types | algoipfssvc is retired at M6 |
 | D10 | Discord new-asset notifications | dropped | they stop when algoipfssvc is retired |

@@ -35,6 +35,8 @@ func DefaultLanes() []Lane {
 		{Name: catalog.LaneFast, Slots: 48, TTFB: 10 * time.Second, RetryTTFB: 10 * time.Second, Fair: true, CreatorCap: 4},
 		{Name: catalog.LaneSlow, Slots: 16, TTFB: 120 * time.Second, RetryTTFB: 120 * time.Second, Fair: true, CreatorCap: 2, SlowSources: true},
 		{Name: catalog.LaneBackfill, Slots: 32, TTFB: 10 * time.Second, RetryTTFB: 120 * time.Second, SlowSources: true},
+		// Read-through for whitelisted referers; the fair-share key is the referring site.
+		{Name: catalog.LaneDemand, Slots: 32, TTFB: 10 * time.Second, RetryTTFB: 10 * time.Second, Fair: true, CreatorCap: 8},
 	}
 }
 
@@ -43,12 +45,12 @@ func DefaultLanes() []Lane {
 var retryDelays = []time.Duration{5 * time.Minute, time.Hour, 6 * time.Hour, 24 * time.Hour, 72 * time.Hour, 168 * time.Hour}
 
 // nextAttempt says where a fetch goes after its attempts-th attempt failed;
-// ok is false when the ladder is exhausted. Fast-lane fetches move to slow.
+// ok is false when the ladder is exhausted. Fast-lane and demand fetches move to slow.
 func nextAttempt(lane string, attempts int, now time.Time) (next string, at time.Time, ok bool) {
 	if attempts < 1 || attempts > len(retryDelays) {
 		return "", time.Time{}, false
 	}
-	if lane == catalog.LaneFast {
+	if lane == catalog.LaneFast || lane == catalog.LaneDemand {
 		lane = catalog.LaneSlow
 	}
 	return lane, now.Add(retryDelays[attempts-1]), true

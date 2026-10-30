@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -27,11 +28,14 @@ type fakeObject struct {
 }
 
 type fakeStore struct {
+	mu     sync.Mutex
 	objs   map[string]fakeObject
 	ranges []int64 // offsets GetRange was called with
 }
 
 func (f *fakeStore) Stat(_ context.Context, key string) (store.Info, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	o, ok := f.objs[key]
 	if !ok {
 		return store.Info{}, store.ErrNotFound
@@ -40,6 +44,8 @@ func (f *fakeStore) Stat(_ context.Context, key string) (store.Info, error) {
 }
 
 func (f *fakeStore) GetRange(_ context.Context, key string, off int64) (io.ReadCloser, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.ranges = append(f.ranges, off)
 	o, ok := f.objs[key]
 	if !ok {
@@ -51,13 +57,37 @@ func (f *fakeStore) GetRange(_ context.Context, key string, off int64) (io.ReadC
 func (f *fakeStore) Ping(context.Context) error { return nil }
 
 type fakeCatalog struct {
-	objs    map[string]catalog.Object
-	aliases map[string]string // root + "/" + subpath -> leaf
-	assets  []catalog.AssetObject
-	err     error
+	mu       sync.Mutex
+	objs     map[string]catalog.Object
+	aliases  map[string]string // root + "/" + subpath -> leaf
+	assets   []catalog.AssetObject
+	fetches  map[string]catalog.FetchState // root + "/" + subpath
+	demanded []string                      // root/subpath@site
+	onDemand func(root, sub string)        // plays ingest
+	err      error
+}
+
+func (f *fakeCatalog) FetchState(_ context.Context, root, sub string) (catalog.FetchState, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.fetches[root+"/"+sub], f.err
+}
+
+func (f *fakeCatalog) Demand(_ context.Context, root, sub, site string) error {
+	f.mu.Lock()
+	f.demanded = append(f.demanded, root+"/"+sub+"@"+site)
+	f.fetches[root+"/"+sub] = catalog.FetchState{Found: true, Status: "pending", Lane: catalog.LaneDemand}
+	cb := f.onDemand
+	f.mu.Unlock()
+	if cb != nil {
+		go cb(root, sub)
+	}
+	return f.err
 }
 
 func (f *fakeCatalog) Lookup(_ context.Context, cid string) (catalog.Object, bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	if f.err != nil {
 		return catalog.Object{}, false, f.err
 	}
@@ -66,6 +96,8 @@ func (f *fakeCatalog) Lookup(_ context.Context, cid string) (catalog.Object, boo
 }
 
 func (f *fakeCatalog) ResolveAlias(_ context.Context, root, sub string) (string, bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	if f.err != nil {
 		return "", false, f.err
 	}
@@ -103,7 +135,7 @@ func newFixture(t *testing.T) *fixture {
 	t.Helper()
 	f := &fixture{
 		st:  &fakeStore{objs: map[string]fakeObject{}},
-		cat: &fakeCatalog{objs: map[string]catalog.Object{}, aliases: map[string]string{}},
+		cat: &fakeCatalog{objs: map[string]catalog.Object{}, aliases: map[string]string{}, fetches: map[string]catalog.FetchState{}},
 		td:  &Takedowns{},
 	}
 	f.td.Set(map[string]string{})
@@ -112,11 +144,17 @@ func newFixture(t *testing.T) *fixture {
 		Log:        slog.New(slog.NewTextHandler(io.Discard, nil)),
 		Registry:   prometheus.NewRegistry(),
 		MissMaxAge: time.Minute,
+
+		DemandHeader:     "X-Seapin-Whitelisted",
+		DemandWait:       2 * time.Second,
+		DemandMaxWaiters: 4,
 	}).Routes()
 	return f
 }
 
 func (f *fixture) put(cid string, data []byte, ct string) {
+	f.st.mu.Lock()
+	defer f.st.mu.Unlock()
 	f.st.objs[cidkey.ObjectKey(cid)] = fakeObject{data: data, ct: ct}
 }
 

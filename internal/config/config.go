@@ -28,6 +28,11 @@ type Config struct {
 	// reads) is off unless INTERNAL_ADDR is set; it then needs INTERNAL_TOKEN.
 	InternalAddr  string
 	InternalToken string
+	// Read-through (D2): openresty sets DemandHeader to "1" on requests whose
+	// referer is whitelisted; a miss on those queues a fetch and waits for it.
+	DemandHeader     string
+	DemandWait       time.Duration
+	DemandMaxWaiters int
 }
 
 // Ingest holds what `seapin ingest` needs on top of Config.
@@ -44,8 +49,8 @@ type Ingest struct {
 	PinataURL   string // optional last source, slow lanes only
 	PinataToken string
 
-	FastSlots, SlowSlots, BackfillSlots         int
-	FastTTFB, SlowTTFB, BackfillTTFB, RetryTTFB time.Duration
+	FastSlots, SlowSlots, BackfillSlots, DemandSlots        int
+	FastTTFB, SlowTTFB, BackfillTTFB, RetryTTFB, DemandTTFB time.Duration
 }
 
 // LoadIngest reads Config plus the ingest settings.
@@ -75,6 +80,8 @@ func LoadIngest() (Config, Ingest, error) {
 		SlowTTFB:      p.dur("SLOW_TTFB", 120*time.Second),
 		BackfillTTFB:  p.dur("BACKFILL_TTFB", 10*time.Second),
 		RetryTTFB:     p.dur("BACKFILL_RETRY_TTFB", 120*time.Second),
+		DemandSlots:   p.int("DEMAND_SLOTS", 32),
+		DemandTTFB:    p.dur("DEMAND_TTFB", 10*time.Second),
 	}
 	if in.PeerURL != "" && in.PeerToken == "" {
 		p.errs = append(p.errs, "PEER_URL needs PEER_TOKEN")
@@ -162,6 +169,13 @@ func Load() (Config, error) {
 		return c, fmt.Errorf("TAKEDOWN_REFRESH: %w", err)
 	}
 	c.InternalAddr, c.InternalToken = os.Getenv("INTERNAL_ADDR"), os.Getenv("INTERNAL_TOKEN")
+	c.DemandHeader = envOr("DEMAND_HEADER", "X-Seapin-Whitelisted")
+	p := parser{}
+	c.DemandWait = p.dur("DEMAND_WAIT", 20*time.Second)
+	c.DemandMaxWaiters = p.int("DEMAND_MAX_WAITERS", 256)
+	if err := p.err(); err != nil {
+		return c, err
+	}
 	if c.InternalAddr != "" && len(c.InternalToken) < 32 {
 		return c, fmt.Errorf("INTERNAL_ADDR needs an INTERNAL_TOKEN of at least 32 characters")
 	}

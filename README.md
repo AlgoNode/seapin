@@ -1,8 +1,9 @@
 # seapin
 
 IPFS cache gateway for Algorand assets. Each region (EU, US) keeps its own SeaweedFS bucket and Postgres catalog of
-every IPFS object Algorand ASAs reference. Only content on an allowlist is stored. Anything not cached is a 404:
-seapin never fetches from IPFS while serving. Design, decisions and milestones: [PLAN.md](PLAN.md).
+every IPFS object Algorand ASAs reference. Only content on an allowlist is stored. A request for something not
+cached gets a 404, unless openresty marks its referer as whitelisted: then seapin fetches it (read-through), caches
+it and serves it. Design, decisions and milestones: [PLAN.md](PLAN.md).
 
 **Status:**
 - M1 (the read path, `seapin serve`), M2 (ingest: queue consumer, fetch lanes, kubo sidecar, JSON link following) and
@@ -19,6 +20,7 @@ seapin never fetches from IPFS while serving. Design, decisions and milestones: 
 | refused by the content policy | 403 with the reason (`not_allowed:<type>`, `too_large`, `directory`) |
 | taken down (`takedowns` table) | 451 |
 | not cached | 404, `Cache-Control: max-age=60` so the CDN asks again soon |
+| not cached, request has `X-Seapin-Whitelisted: 1` (set by openresty) | read-through: fetched through the `demand` lane, served when ready (≤ `DEMAND_WAIT`), else 504 + `Retry-After`; a CID that already failed once is 404 at once |
 | invalid CID or path | 400 |
 
 - Any CID spelling works: `Qm…` (v0), and base32, base36 or base58 v1. Objects are stored as CIDv1 base32 under
@@ -84,12 +86,13 @@ the original chunking, so for those the operator vouches. S3 identities:
 | `PG_DSN` | required | catalog Postgres |
 | `MISS_MAX_AGE` | `60s` | `Cache-Control` max-age of a 404 |
 | `TAKEDOWN_REFRESH` | `60s` | how often the takedown list is reloaded; `serve` won't start until it has loaded once |
+| `DEMAND_HEADER`, `DEMAND_WAIT`, `DEMAND_MAX_WAITERS` | `X-Seapin-Whitelisted`, 20s, 256 | read-through for whitelisted referers |
 | `INTERNAL_ADDR`, `INTERNAL_TOKEN` | off | `serve`'s internal listener (`/internal/ipfs/`, `/internal/assets/`); token ≥ 32 chars |
 | `REGION`, `RMQ_URL` | required for `ingest` | consumes queue `seapin.<REGION>` |
 | `KUBO_URL` | `http://127.0.0.1:8080` | fetch sidecar gateway |
 | `PEER_URL` + `PEER_TOKEN`, `PINATA_URL` + `PINATA_TOKEN` | off | other region's internal listener; Pinata (slow lanes only) |
-| `FAST_SLOTS` / `SLOW_SLOTS` / `BACKFILL_SLOTS` | 48 / 16 / 32 | workers per lane |
-| `FAST_TTFB` / `SLOW_TTFB` / `BACKFILL_TTFB` / `BACKFILL_RETRY_TTFB` | 10s / 120s / 10s / 120s | first-byte deadlines |
+| `FAST_SLOTS` / `SLOW_SLOTS` / `BACKFILL_SLOTS` / `DEMAND_SLOTS` | 48 / 16 / 32 / 32 | workers per lane |
+| `FAST_TTFB` / `SLOW_TTFB` / `BACKFILL_TTFB` / `BACKFILL_RETRY_TTFB` / `DEMAND_TTFB` | 10s / 120s / 10s / 120s / 10s | first-byte deadlines |
 | `QUEUE_TYPE`, `QUEUE_MAX_LENGTH`, `PREFETCH` | classic, 10 M, 256 | the region queue |
 | `INGEST_ADDR` | `127.0.0.1:8091` | ingest `/health` and `/metrics` |
 

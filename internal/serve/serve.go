@@ -32,6 +32,8 @@ type Catalog interface {
 	Lookup(ctx context.Context, cid string) (catalog.Object, bool, error)
 	ResolveAlias(ctx context.Context, root, subpath string) (string, bool, error)
 	AssetObjects(ctx context.Context, chain string, asset uint64) ([]catalog.AssetObject, error)
+	FetchState(ctx context.Context, root, subpath string) (catalog.FetchState, error)
+	Demand(ctx context.Context, root, subpath, site string) error
 	Ping(ctx context.Context) error
 }
 
@@ -42,12 +44,19 @@ type Options struct {
 	Log        *slog.Logger
 	Registry   *prometheus.Registry
 	MissMaxAge time.Duration
+	// Read-through (D2): a request with DemandHeader: 1, which openresty sets
+	// for whitelisted referers, queues a fetch on a miss and waits up to
+	// DemandWait; at most DemandMaxWaiters requests wait at once.
+	DemandHeader     string
+	DemandWait       time.Duration
+	DemandMaxWaiters int
 }
 
 type Handler struct {
 	Options
 	requests *prometheus.CounterVec
 	bytes    prometheus.Counter
+	waiters  chan struct{}
 }
 
 func New(o Options) *Handler {
@@ -61,6 +70,7 @@ func New(o Options) *Handler {
 			Name: "seapin_serve_bytes_total",
 			Help: "Response bytes written for /ipfs/ requests.",
 		}),
+		waiters: make(chan struct{}, max(1, o.DemandMaxWaiters)),
 	}
 	o.Registry.MustRegister(h.requests, h.bytes)
 	return h
@@ -81,12 +91,15 @@ func (h *Handler) Routes() http.Handler {
 }
 
 const (
-	outcomeHit      = "hit"
-	outcomeMiss     = "miss"
-	outcomeBlocked  = "blocked"
-	outcomeTakedown = "takedown"
-	outcomeInvalid  = "invalid"
-	outcomeError    = "error"
+	outcomeHit           = "hit"
+	outcomeMiss          = "miss"
+	outcomeBlocked       = "blocked"
+	outcomeTakedown      = "takedown"
+	outcomeInvalid       = "invalid"
+	outcomeError         = "error"
+	outcomeDemandHit     = "demand_hit"
+	outcomeDemandTimeout = "demand_timeout"
+	outcomeDemandBusy    = "demand_busy"
 )
 
 func (h *Handler) ipfs(w http.ResponseWriter, r *http.Request) {
@@ -97,7 +110,6 @@ func (h *Handler) ipfs(w http.ResponseWriter, r *http.Request) {
 		h.bytes.Add(float64(cw.n))
 	}()
 	w = cw
-	ctx := r.Context()
 	policy.SetHeaders(w.Header())
 
 	root, err := cidkey.Normalize(r.PathValue("cid"))
@@ -120,14 +132,14 @@ func (h *Handler) ipfs(w http.ResponseWriter, r *http.Request) {
 
 	leaf := root
 	if sub != "" {
-		l, found, err := h.Catalog.ResolveAlias(ctx, root, sub)
+		l, found, err := h.Catalog.ResolveAlias(r.Context(), root, sub)
 		if err != nil {
 			h.Log.Error("alias lookup", "root", root, "path", sub, "err", err)
 			reply(w, http.StatusServiceUnavailable, "no-store", "catalog unavailable")
 			return
 		}
 		if !found {
-			outcome = h.miss(w, r, root)
+			outcome = h.notCached(w, r, root, sub)
 			return
 		}
 		leaf = l
@@ -137,28 +149,35 @@ func (h *Handler) ipfs(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	outcome = h.serveLeaf(w, r, leaf, func() string {
+		if h.blocked(w, r, leaf) {
+			return outcomeBlocked
+		}
+		return h.notCached(w, r, root, sub)
+	})
+}
 
+// serveLeaf streams a stored leaf object; missing answers when the bucket
+// does not have it.
+func (h *Handler) serveLeaf(w http.ResponseWriter, r *http.Request, leaf string, missing func() string) string {
+	ctx := r.Context()
 	key := cidkey.ObjectKey(leaf)
 	info, err := h.Store.Stat(ctx, key)
 	if errors.Is(err, store.ErrNotFound) {
-		outcome = h.miss(w, r, leaf)
-		return
+		return missing()
 	}
 	if err != nil {
 		h.Log.Error("s3 stat", "cid", leaf, "err", err)
 		reply(w, http.StatusBadGateway, "no-store", "storage error")
-		return
+		return outcomeError
 	}
 	if !policy.Allowed(info.ContentType) {
 		// Ingest never stores these; reaching here means the bucket was written
 		// some other way.
 		h.Log.Warn("stored object has a type that is not served", "cid", leaf, "type", info.ContentType)
-		outcome = outcomeBlocked
 		reply(w, http.StatusForbidden, "no-store", "content type not served")
-		return
+		return outcomeBlocked
 	}
-
-	outcome = outcomeHit
 	hdr := w.Header()
 	hdr.Set("Content-Type", info.ContentType)
 	hdr.Set("ETag", `"`+leaf+`"`)
@@ -169,22 +188,37 @@ func (h *Handler) ipfs(w http.ResponseWriter, r *http.Request) {
 	if obj.err != nil && ctx.Err() == nil {
 		h.Log.Error("s3 read", "cid", leaf, "err", obj.err)
 	}
+	return outcomeHit
 }
 
-// miss answers for a CID that is not in the bucket: 403 when the catalog says
-// it was refused, otherwise a 404 the CDN may only keep briefly.
-func (h *Handler) miss(w http.ResponseWriter, r *http.Request, cid string) string {
-	o, found, err := h.Catalog.Lookup(r.Context(), cid)
+// blocked answers 403 when the catalog records the leaf as refused. Without
+// the catalog it answers nothing: blocked bytes are never stored, so the
+// caller's 404 stays safe.
+func (h *Handler) blocked(w http.ResponseWriter, r *http.Request, leaf string) bool {
+	o, found, err := h.Catalog.Lookup(r.Context(), leaf)
 	if err != nil {
-		// Blocked bytes are never stored, so a plain 404 is safe without the catalog.
-		h.Log.Warn("catalog lookup", "cid", cid, "err", err)
+		h.Log.Warn("catalog lookup", "cid", leaf, "err", err)
+		return false
 	}
-	if err == nil && found && o.Status == catalog.StatusBlocked {
+	if found && o.Status == catalog.StatusBlocked {
 		reply(w, http.StatusForbidden, "public, max-age=86400", "content not served: "+o.Reason)
-		return outcomeBlocked
+		return true
 	}
-	reply(w, http.StatusNotFound, fmt.Sprintf("public, max-age=%d", int(h.MissMaxAge.Seconds())), "not cached")
+	return false
+}
+
+// notCached answers for content the bucket does not have: read-through for
+// whitelisted referers, otherwise a 404 the CDN may only keep briefly.
+func (h *Handler) notCached(w http.ResponseWriter, r *http.Request, root, sub string) string {
+	if h.DemandHeader != "" && r.Header.Get(h.DemandHeader) == "1" {
+		return h.demand(w, r, root, sub)
+	}
+	h.notFound(w)
 	return outcomeMiss
+}
+
+func (h *Handler) notFound(w http.ResponseWriter) {
+	reply(w, http.StatusNotFound, fmt.Sprintf("public, max-age=%d", int(h.MissMaxAge.Seconds())), "not cached")
 }
 
 func (h *Handler) takedown(w http.ResponseWriter, cid, reason string) {

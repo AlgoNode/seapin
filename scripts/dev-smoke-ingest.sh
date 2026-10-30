@@ -39,7 +39,7 @@ metric() { curl -s "$METRICS" | awk -v m="$1" '$1 == m {print $2}' | head -1; }
 # pointing at the image and into the directory.
 S=dev/seed/ingest-$RUN
 mkdir -p "$S/dir"
-python3 -I - "$S/a.png" "$S/dir/1.png" <<'EOF'
+python3 -I - "$S/a.png" "$S/dir/1.png" "$S/unref.png" <<'EOF'
 import struct, sys, zlib
 def chunk(t, d): return struct.pack(">I", len(d)) + t + d + struct.pack(">I", zlib.crc32(t + d))
 for i, path in enumerate(sys.argv[1:]):
@@ -119,4 +119,15 @@ assert st == [("blocked", "text/html; charset=utf-8"), ("cached", "application/j
 assert all(e["region"] == "dev" and e["v"] == 1 for e in evs), evs
 ' || fail "events: $events"
 ok "events: 3 cached + 1 blocked on seapin.events"
+# Read-through (D2): a CID no ref points at is fetched only for whitelisted referers
+# (openresty sets X-Seapin-Whitelisted); afterwards it is cached for everyone.
+UNREF=$(kadd "$C/unref.png")
+[ "$(curl -s -o /dev/null -w '%{http_code}' "$GW/ipfs/$UNREF")" = "404" ] || fail "unreferenced CID without whitelist"
+out=$(curl -s -o /dev/null -w '%{http_code} %{time_total}' -H 'X-Seapin-Whitelisted: 1' -H 'Referer: https://smoke.example/nft/1' "$GW/ipfs/$UNREF")
+[ "${out%% *}" = "200" ] || fail "whitelisted read-through: $out"
+ok "whitelisted read-through fetched and served the unreferenced CID in ${out#* } s"
+[ "$(curl -s -o /dev/null -w '%{http_code}' "$GW/ipfs/$UNREF")" = "200" ] || fail "read-through object not cached"
+row=$(psql_dev "SELECT lane || ' ' || creator || ' ' || status FROM fetches WHERE root_cid = '$UNREF'")
+[ "$row" = "demand site:smoke.example done" ] || fail "read-through fetch row: $row"
+ok "cached for everyone afterwards; fetch ran in the demand lane keyed by site"
 echo PASS
