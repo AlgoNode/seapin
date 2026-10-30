@@ -11,6 +11,9 @@ it and serves it. Design, decisions and milestones: [PLAN.md](PLAN.md).
 - M3 has had its first mainnet run (24 of 26 refs identical to `x_asset_meta`, 0 different; PLAN §3).
 - Deployment (M4–M6) is next.
 
+**Deployment:** `/home/urtho/dev/_production/algoup/deploy/seapin` (compose, README, `rollout.sh <eu|us> all`)
+on net-de-nur-ipfs (EU) and net-us-ash-ipfs (US), with the `seaweed-nft` stack beside it.
+
 ## What `serve` answers
 
 | request | answer |

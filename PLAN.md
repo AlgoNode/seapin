@@ -603,6 +603,13 @@ Both reach ssh only through 4160mgmt. Each has a 3 TB netcup block device `vdb` 
 - [ ] Stacks per **nodely-deploy**: Postgres (on the local root disk, beside the filer store; vdb is network block
       storage), rainbow (`deploy/rainbow`), `seapin serve`, `seapin ingest`, and in the EU `seapin-scan`, plus
       openresty per D5 with the two `X-Seapin-*` headers. Secrets go in the vault and `.env` 0600.
+      **Prepared 2026-10-30, not rolled out:**
+      - `algoup deploy/seapin` (compose, env.example, README, `rollout.sh`) and the seaweed takeover in
+        `deploy/seaweed-nft` (algoup `2026-10-30`)
+      - image `seapin:20261030-1`
+      - RMQ_URL may list rabbit02 + rabbit01
+      Remote writes (RabbitMQ user, UFW on ipfs-1/etl, the host stacks) wait for the operator: run
+      `rollout.sh eu all`, or allow them.
 - [ ] Network across providers. The NetCup hosts have no VLAN to Hetzner, so RabbitMQ, blksrv (htz-fi-hel-tmp),
       the etl Postgres (`x_asset_meta`) and the legacy caches on ipfs-1/2 are reached over the tailnet or allowlisted
       TLS endpoints (**nodely-expose**, **nodely-data**). The internal listener carries peer fetches between the two
