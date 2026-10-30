@@ -622,7 +622,13 @@ Both reach ssh only through 4160mgmt. Each has a 3 TB netcup block device `vdb` 
 - [ ] Filer store backup. It lives on the root disk and is not rebuildable: losing it orphans every stored object
       until anti-entropy re-fetches them from the peer region. Back it up nightly (`weed filer.meta.backup` or a
       leveldb snapshot), or accept that and document it.
-- [ ] Seed from the old caches on ipfs-1/2 (2.3–2.4 TB).
+- [~] Seed from the old caches on ipfs-1/2 (2.3–2.4 TB). **Running since 2026-10-30 23:31 UTC:**
+      - the legacy endpoint is live on both hosts
+      - check: of 40 `x_asset_meta` CIDs, ipfs-2 had 34 cached and ipfs-1 had 7
+      - the full backfill runs at 232 rounds/s, so genesis is ~2026-11-03 07:00 UTC; algoup `deploy/seapin`
+        README log
+      - possible speed-up: reuse algod HTTP connections and use 64 fetchers (each block costs ~110 ms of
+        Nuremberg→Helsinki latency)
       - On both hosts, add an internal openresty listener (VLAN/tailnet only) that passes
         `Cache-Control: only-if-cached` to kubo and returns 412 on a miss.
       - Point ingest's `LEGACY_URL` at it and run the M3 backfill.
