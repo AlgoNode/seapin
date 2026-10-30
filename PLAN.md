@@ -415,7 +415,8 @@ M1 and M3 can run in parallel once M0's contract is frozen; M3's `x_asset_meta` 
 - [ ] Confirm how the indexers' GraphQL gets `x_asset_meta` (an fdw to the etl Postgres?) and who else reads it or
       the `log` exchange.
 - [ ] Measure blksrv backfill throughput (rounds/s at 8, 16 and 32 parallel fetchers).
-- [ ] Registry: seapin `status: active`, `deps` (RabbitMQ, algod, blksrv, the etl Postgres for `x_asset_meta`).
+- [x] Registry: seapin `status: active` — 2026-10-30 (`_registry` 94248c4).
+- [ ] Registry `deps` (RabbitMQ, algod, blksrv, the etl Postgres for `x_asset_meta`), each added when the code starts using it (M2/M3).
 
 Exit: the decisions table is filled in and the capacity numbers are recorded here.
 
@@ -446,7 +447,7 @@ policy's back also gets 403. A takedown gives 451, an unknown CID 404 (60 s), an
 race and catalog tests pass.
 
 ### M2: catalog, ingest worker and fetch sidecar
-- [ ] Postgres schema and migrations (§1).
+- [x] Postgres schema and migrations (§1): shipped with M1 (`0001_init.sql`); the `asset_objects` view comes with link extraction below. — 2026-10-30
 - [ ] Intake: consume `seapin.<region>`, upsert ref + object, ack. It never fetches (§1 Ingest scheduling).
 - [ ] Scheduler: lanes with their own worker pools, leases, per-creator round-robin and caps, retry ladder,
       TTFB/stall/rate deadlines.
