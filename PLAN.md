@@ -628,6 +628,11 @@ Both reach ssh only through 4160mgmt. Each has a 3 TB netcup block device `vdb` 
       - Point ingest's `LEGACY_URL` at it and run the M3 backfill.
       - This is where most historical content comes from: the M0 spike found ~7 in 10 all-time objects are gone from
         the network, and 97% of those are in these caches.
+      - **Prepared 2026-10-31:**
+        - `algoup deploy/seapin/legacy-endpoint.sh` and `openresty-09-seapin-legacy.conf`: port 8101 on each host's
+          public IP, nginx admits only the two region hosts, UFW allows + deny-rest, `only-if-cached` forced
+          (kubo: miss 412 in < 1 ms)
+        - image `seapin:20261031-1`: LEGACY_URL lists both hosts, because their caches differ
 - [ ] Zabbix (health, disk 70/85 %, queue depth, ingest errors, projected date for 8 TB); apilog onboarding; deploy
       record; registry deploy row.
 - [ ] Resize drill: grow the volume a little online, run `xfs_growfs`, confirm SeaweedFS reports more free slots
