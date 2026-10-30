@@ -13,6 +13,7 @@ import (
 
 	"seapin/internal/catalog"
 	"seapin/internal/contract"
+	"seapin/internal/rmq"
 )
 
 type IntakeCatalog interface {
@@ -24,7 +25,7 @@ type IntakeCatalog interface {
 // message costs one catalog transaction and is acked after it; nothing here
 // waits on IPFS, so the queue never backs up behind a slow fetch.
 type Intake struct {
-	URL       string
+	URL       string // one or more cluster nodes, comma-separated
 	Queue     string // seapin.<region>
 	QueueType string // "" (classic) or "quorum"
 	MaxLength int64  // the queue drops its oldest messages beyond this; anti-entropy covers the loss
@@ -64,10 +65,7 @@ func (in *Intake) Run(ctx context.Context) {
 }
 
 func (in *Intake) session(ctx context.Context) error {
-	conn, err := amqp.DialConfig(in.URL, amqp.Config{
-		Heartbeat:  10 * time.Second,
-		Properties: amqp.Table{"connection_name": "seapin-ingest " + in.Queue},
-	})
+	conn, err := rmq.Dial(in.URL, "seapin-ingest "+in.Queue)
 	if err != nil {
 		return err
 	}
@@ -201,7 +199,7 @@ func (e *Events) Publish(ctx context.Context, ev contract.Event) {
 
 func (e *Events) connect() error {
 	e.close()
-	cn, err := amqp.DialConfig(e.URL, amqp.Config{Heartbeat: 10 * time.Second, Properties: amqp.Table{"connection_name": "seapin-events"}})
+	cn, err := rmq.Dial(e.URL, "seapin-events")
 	if err != nil {
 		return err
 	}

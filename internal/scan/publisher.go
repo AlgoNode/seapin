@@ -4,18 +4,18 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"time"
 
 	amqp "github.com/rabbitmq/amqp091-go"
 
 	"seapin/internal/contract"
+	"seapin/internal/rmq"
 )
 
 // Publisher sends refs to the "seapin" fanout exchange and waits for the
 // broker's confirms, so a cursor only moves past refs RabbitMQ has taken.
 // One per cursor; not safe for concurrent use.
 type Publisher struct {
-	URL  string
+	URL  string // one or more cluster nodes, comma-separated
 	Name string // connection name, for the RabbitMQ UI
 
 	conn *amqp.Connection
@@ -63,7 +63,7 @@ func (p *Publisher) Publish(ctx context.Context, refs []contract.Ref) error {
 
 func (p *Publisher) connect() error {
 	p.Close()
-	conn, err := amqp.DialConfig(p.URL, amqp.Config{Heartbeat: 10 * time.Second, Properties: amqp.Table{"connection_name": p.Name}})
+	conn, err := rmq.Dial(p.URL, p.Name)
 	if err != nil {
 		return err
 	}

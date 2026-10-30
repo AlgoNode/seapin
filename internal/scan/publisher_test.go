@@ -10,16 +10,18 @@ import (
 	amqp "github.com/rabbitmq/amqp091-go"
 
 	"seapin/internal/contract"
+	"seapin/internal/rmq"
 )
 
 // TestPublisherConfirms publishes through a real broker (SEAPIN_TEST_RMQ_URL,
-// e.g. the dev stack's) into an exclusive queue bound to the exchange.
+// e.g. the dev stack's, possibly after a dead node to exercise failover) into
+// an exclusive queue bound to the exchange.
 func TestPublisherConfirms(t *testing.T) {
 	url := os.Getenv("SEAPIN_TEST_RMQ_URL")
 	if url == "" {
 		t.Skip("SEAPIN_TEST_RMQ_URL not set")
 	}
-	conn, err := amqp.Dial(url)
+	conn, err := rmq.Dial(url, "seapin-scan test consumer")
 	if err != nil {
 		t.Fatal(err)
 	}
