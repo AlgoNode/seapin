@@ -227,3 +227,36 @@ func TestDemand(t *testing.T) {
 		t.Errorf("backfill fetch not promoted: %+v", st)
 	}
 }
+
+const rawCID = "bafkreigh2akiscaildcqabsyg3dfr6chu3fgpregiymsck7e7aqa4s52zy"
+
+func TestRefsBefore(t *testing.T) {
+	c := openTest(t)
+	ctx := context.Background()
+	if err := c.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	for i := range 5 {
+		c.ApplyRef(ctx, ref(uint64(100+i), "url", rawCID, "", "A", "live", 100))
+	}
+	// Written after the cutoff: excluded.
+	c.pool.Exec(ctx, `UPDATE refs SET updated_at = now() + interval '1 hour' WHERE asset = 104`)
+	cut := time.Now().Add(time.Minute)
+
+	page, err := c.RefsBefore(ctx, cut, "", 2)
+	if err != nil || len(page) != 2 || page[0].Asset != 100 || page[1].Asset != 101 {
+		t.Fatalf("first page: %+v %v", page, err)
+	}
+	for _, r := range page {
+		if r.Src != contract.SrcBackfill || r.CID != rawCID || r.Creator != "A" || r.Round != 100 {
+			t.Fatalf("ref fields: %+v", r)
+		}
+		if err := r.Validate(); err != nil {
+			t.Fatalf("republished ref invalid: %v", err)
+		}
+	}
+	rest, err := c.RefsBefore(ctx, cut, page[1].Key, 10)
+	if err != nil || len(rest) != 2 || rest[0].Asset != 102 || rest[1].Asset != 103 {
+		t.Fatalf("resumed page: %+v %v", rest, err)
+	}
+}

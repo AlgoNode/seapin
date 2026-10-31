@@ -90,6 +90,12 @@ func (in *Intake) session(ctx context.Context) error {
 	if err := ch.QueueBind(in.Queue, "", contract.ExchangeRefs, false, nil); err != nil {
 		return err
 	}
+	if err := ch.ExchangeDeclare(contract.ExchangeDirect, "direct", true, false, false, false, nil); err != nil {
+		return err
+	}
+	if err := ch.QueueBind(in.Queue, in.Queue, contract.ExchangeDirect, false, nil); err != nil {
+		return err
+	}
 	deliveries, err := ch.ConsumeWithContext(ctx, in.Queue, "seapin-ingest", false, false, false, false, nil)
 	if err != nil {
 		return err

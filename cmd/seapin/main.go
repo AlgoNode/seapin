@@ -48,6 +48,8 @@ func main() {
 		err = runMigrate(ctx, log)
 	case "seed":
 		err = runSeed(ctx, log, os.Args[2:])
+	case "republish":
+		err = runRepublish(ctx, log, os.Args[2:])
 	case "health":
 		err = runHealth(os.Args[2:])
 	case "version":
@@ -62,7 +64,7 @@ func main() {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: seapin serve | ingest | migrate | seed <cid> <file> | health [addr] | version")
+	fmt.Fprintln(os.Stderr, "usage: seapin serve | ingest | migrate | seed <cid> <file> | republish -queue <q> -before <time> | health [addr] | version")
 	os.Exit(2)
 }
 

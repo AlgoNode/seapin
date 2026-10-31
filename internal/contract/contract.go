@@ -20,6 +20,9 @@ const (
 
 	ExchangeRefs   = "seapin"
 	ExchangeEvents = "seapin.events"
+	// ExchangeDirect addresses one region: each region queue is bound to it
+	// under its own name ("seapin.us"), for republishing and anti-entropy.
+	ExchangeDirect = "seapin.direct"
 
 	TypeRef      = "ref"
 	TypeTakedown = "takedown"
