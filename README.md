@@ -123,3 +123,19 @@ go test -race -p=$(nproc --ignore=1) ./...
 SEAPIN_TEST_PG_DSN='postgres://seapin:<PG_PASSWORD>@127.0.0.1:21432/seapin?sslmode=disable' \
 SEAPIN_TEST_RMQ_URL='amqp://seapin:<RMQ_PASSWORD>@127.0.0.1:21672/' go test ./...
 ```
+
+## Shadow comparison (M4)
+
+`scripts/shadow-compare.py` replays a sample of real gateway requests (`nodely.apilog` on dw2) against the current
+gateway and seapin, and compares status, Content-Type, length and body hash. It also flags any seapin answer with a
+type outside the allowlist or without the `nosniff` / sandbox CSP headers. Both sides are read-only.
+The sample is saved, so a later run can measure the same requests again:
+
+```sh
+python3 -I scripts/shadow-compare.py -n 500                  # new sample, last 24 h
+python3 -I scripts/shadow-compare.py --sample <out>/sample.tsv   # same requests again
+```
+
+It needs `SHADOW_REFERER` (a referer the old gateway whitelists) in the environment or `.env`, plus a dw2 ClickHouse
+client and ssh to the region host. Pass `--whitelisted` to send `X-Seapin-Whitelisted: 1` the way openresty will;
+seapin then reads misses through. Results go to `~/dev/tmp/seapin-shadow/<time>/`.
