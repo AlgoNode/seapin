@@ -685,6 +685,9 @@ type leaking through, and the share of requests that will 404 (unreferenced CIDs
 
 ### M5: US region and asynchronous replication
 - [ ] Same stack in the US; `seapin.us` queue; peer endpoint over the tailnet with a token; optional US delay queue.
+      - **US stack up 2026-10-31 08:25 UTC** on net-us-ash-ipfs (`rollout.sh us all`, legacy seed from ipfs-1/2):
+        `seapin.us` consumed, backups and the face running. Refs published before 08:25 still need republishing
+        from the EU catalog; Zabbix not linked yet; peer endpoint not built.
 - [ ] Serve path: on a local miss, proxy from the peer region's cache when it has the CID, and nudge local ingest (D2).
 - [ ] Daily anti-entropy both ways; `takedown` messages honoured in both regions.
 - [ ] Drill: stop EU ingest for 1 h while publishing, restore, confirm convergence. Rebuild a scratch region from the
