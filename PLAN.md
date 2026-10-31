@@ -690,8 +690,8 @@ type leaking through, and the share of requests that will 404 (unreferenced CIDs
         from the EU catalog; Zabbix not linked yet; peer endpoint not built.
       - **Republish prepared 2026-10-31:** `seapin republish` (`86b0263`) sends a region's catalog refs to one queue
         through the direct exchange `seapin.direct` (also the anti-entropy path), paced by queue depth; image
-        `seapin:20261031-4`; algoup `rollout.sh us republish`. **-4 runs in both regions since ~08:50 UTC; the US
-        republish started ~08:55 UTC; the US is linked in Zabbix (template 10833) since ~08:57 UTC.**
+        `seapin:20261031-4`; algoup `rollout.sh us republish`. **-4 runs in both regions since ~08:42 UTC; the US
+        republish started ~08:44 UTC; the US is linked in Zabbix (template 10833) since ~08:45 UTC.**
 - [ ] Serve path: on a local miss, proxy from the peer region's cache when it has the CID, and nudge local ingest (D2).
 - [ ] Daily anti-entropy both ways; `takedown` messages honoured in both regions.
 - [ ] Drill: stop EU ingest for 1 h while publishing, restore, confirm convergence. Rebuild a scratch region from the
