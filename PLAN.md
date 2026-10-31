@@ -619,9 +619,13 @@ Both reach ssh only through 4160mgmt. Each has a 3 TB netcup block device `vdb` 
       - blksrv: already public
       - still to open: the etl Postgres (for the `x_asset_meta` writer) and the legacy endpoint on ipfs-1/2
       — 2026-10-30
-- [ ] Filer store backup. It lives on the root disk and is not rebuildable: losing it orphans every stored object
-      until anti-entropy re-fetches them from the peer region. Back it up nightly (`weed filer.meta.backup` or a
-      leveldb snapshot), or accept that and document it.
+- [~] Filer store backup. It lives on the root disk and is not rebuildable: losing it orphans every stored object
+      until anti-entropy re-fetches them from the peer region. **Prepared 2026-10-31** (algoup `f0f2aad`):
+      - `seaweedfs-meta-backup` (`weed filer.meta.backup`) mirrors it continuously into a second leveldb2 store on
+        the block device; restore = copy it back. Tested on the dev stack: a filer opened on the copy served
+        identical bytes.
+      - `seapin-pgdump` dumps the catalog daily to the block device, keeping 7.
+      - restore runbook: algoup `deploy/seapin/README.md`, Backups. EU needs `rollout.sh eu backup`.
 - [~] Seed from the old caches on ipfs-1/2 (2.3–2.4 TB). **Running since 2026-10-30 23:31 UTC:**
       - the legacy endpoint is live on both hosts
       - check: of 40 `x_asset_meta` CIDs, ipfs-2 had 34 cached and ipfs-1 had 7
