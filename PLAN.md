@@ -605,14 +605,16 @@ Both reach ssh only through 4160mgmt. Each has a 3 TB netcup block device `vdb` 
       - recorded in algoup `deploy/seapin/README.md` (`4db9857`) and the registry
       - verified end to end: read-through of three real ASA CIDs via rainbow (JSON 0.5 s, JPEG 1.8 s), then
         cached; the live scanner's first refs cached in the fast lane
-- [ ] openresty face per D5 with the two `X-Seapin-*` headers, then shadow traffic.
-      **Prepared 2026-10-30, not rolled out:**
-      - `algoup deploy/seapin` (compose, env.example, README, `rollout.sh`) and the seaweed takeover in
-        `deploy/seaweed-nft` (algoup `2026-10-30`)
-      - image `seapin:20261030-1`
-      - RMQ_URL may list rabbit02 + rabbit01
-      Remote writes (RabbitMQ user, UFW on ipfs-1/etl, the host stacks) wait for the operator: run
-      `rollout.sh eu all`, or allow them.
+- [~] openresty face per D5 with the two `X-Seapin-*` headers, then shadow traffic. **Prepared 2026-10-31**
+      (algoup `70868ca`, `deploy/seapin/README.md` Public face):
+      - `seapin-openresty` (openresty 1.29.2.3, as on the old gateway) on :8880, UFW-closed until M6
+      - the old gateway's `$allowed_referer` map, copied from htz-hel-ipfs-2 by `rollout.sh <region> face`
+        (rerun after whitelist changes until the nodely-portal push covers the region hosts)
+      - both headers always set; non-whitelisted requests keep today's 403
+      - tested against an echo upstream and the dev stack (spoofed headers replaced, bytes identical, ranges)
+      - EU needs `rollout.sh eu face`. Shadow traffic after that: replay with `scripts/shadow-compare.py`, or an
+        nginx `mirror` on ipfs-1/2. A mirror should send HEAD without the whitelist header, so the copy never
+        holds a client connection.
 - [x] Network across providers, by fleet convention (public IP + UFW allowlist):
       - RabbitMQ: vhost `seapin`, user `seapin_eu`, 5672 open to the EU host on rabbit02 (ipfs-1) and rabbit01
         (etl); plain AMQP, as the cluster has no TLS listener
@@ -658,7 +660,18 @@ Both reach ssh only through 4160mgmt. Each has a 3 TB netcup block device `vdb` 
         70 % grow trigger.
 - [ ] Resize drill: grow the volume a little online, run `xfs_growfs`, confirm SeaweedFS reports more free slots
       with no restart.
-- [ ] Shadow comparison against the current gateway on sampled requests (status, type, bytes).
+- [~] Shadow comparison against the current gateway on sampled requests (status, type, bytes):
+      `scripts/shadow-compare.py` (README). **Baseline 2026-10-31 00:07 UTC**, taken while the backfill was still
+      running (at round ~66.2 M), so a low hit rate was expected:
+      - 500 distinct paths drawn from 24 h of `nodely.apilog`; seapin asked without `X-Seapin-Whitelisted`
+      - the old gateway served 461; seapin served 15 of them (3.3%), all byte-identical
+      - referenced (in x_asset_meta or seapin's catalog): 413 of the 461, seapin served 11 (2.7%); the other 402
+        are not reached by the scanner yet
+      - unreferenced: 48 of the 461 (10.4%), which D2 answers 404 unless the referer is whitelisted
+      - both failed: 39 (the old gateway timed out after 30 s on 30, plus 5 × 403 and 4 × 404)
+      - 0 leaks, 0 byte differences, 0 type differences
+      - 2xx latency p50 / p90: old 200 / 420 ms, seapin 117 / 149 ms (through ssh)
+      - next: replay the same sample (`--sample`) after the backfill reaches genesis, then a fresh one
 
 Exit: EU answers at least 99% of sampled referenced-CID requests from cache, the comparison shows no new content
 type leaking through, and the share of requests that will 404 (unreferenced CIDs) is measured and accepted.
