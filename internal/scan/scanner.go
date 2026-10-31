@@ -12,10 +12,13 @@ import (
 	"time"
 
 	"github.com/algorand/go-algorand-sdk/v2/client/v2/algod"
+	"github.com/algorand/go-algorand-sdk/v2/client/v2/common/models"
+	"github.com/algorand/go-algorand-sdk/v2/encoding/msgpack"
 	"github.com/algorand/go-algorand-sdk/v2/types"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/prometheus/client_golang/prometheus"
+	"golang.org/x/sync/semaphore"
 
 	"seapin/internal/contract"
 	"seapin/internal/pgmigrate"
@@ -36,6 +39,7 @@ type Scanner struct {
 	BackfillRounds uint64 // how far below the bootstrap round to go; 0 = to genesis
 	Window         int    // backfill rounds between cursor checkpoints
 	Fetchers       int    // backfill block requests in flight
+	MemoryBudget   int64  // bytes of decoded blocks the backfill may hold ahead of the one it applies; 0 = no limit
 	MaxRefsPerSec  int    // backfill publish budget
 	MaxLiveLag     uint64 // backfill pauses while live is further behind the tip
 	Log            *slog.Logger
@@ -197,9 +201,15 @@ func (s *Scanner) runBackfill(ctx context.Context, next, floor int64) {
 	}
 }
 
+// DecodedPerWireByte is the heap a decoded block takes per byte of its
+// msgpack (measured 11.4 on a 3.3 MB, 2,703-transaction mainnet block at round
+// 54,486,458; scripts/blockmem), rounded up.
+const DecodedPerWireByte = 12
+
 type fetched struct {
-	b   types.Block
-	err error
+	b      types.Block
+	err    error
+	weight int64 // MemoryBudget held until the block is applied
 }
 
 // backfill applies rounds *next down to floor, newest first. Fetching is a
@@ -209,15 +219,31 @@ type fetched struct {
 // the fetching behind it. *next advances after each applied block and is
 // checkpointed every s.Window rounds; a crash re-applies at most that many,
 // which is harmless.
+//
+// Memory: a block is downloaded raw, and before it is decoded it reserves
+// DecodedPerWireByte × its size from s.MemoryBudget, returned once applied.
+// Reservations are taken strictly in round order (each waits for the previous
+// round's), so the block applied next never waits behind later ones: no
+// deadlock, and a run of large blocks (rounds ~54.49 M: 218 MB of msgpack in
+// 320 rounds) shortens the look-ahead instead of exhausting the heap. Raw
+// blocks waiting for their turn are bounded by the look-ahead (4×s.Fetchers
+// blocks, ~175 MB at 64 fetchers in that stretch), so the scanner's live heap
+// stays under MemoryBudget plus that.
 func (s *Scanner) backfill(ctx context.Context, next *int64, floor int64) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	fetchers := max(1, s.Fetchers)
 	slots := make(chan struct{}, fetchers)
 	queue := make(chan chan fetched, 4*fetchers)
+	var sem *semaphore.Weighted
+	if s.MemoryBudget > 0 {
+		sem = semaphore.NewWeighted(s.MemoryBudget)
+	}
 	from := *next
 	go func() {
 		defer close(queue)
+		prev := make(chan struct{})
+		close(prev)
 		for r := from; r >= floor; r-- {
 			res := make(chan fetched, 1)
 			select {
@@ -230,11 +256,30 @@ func (s *Scanner) backfill(ctx context.Context, next *int64, floor int64) error 
 			case <-ctx.Done():
 				return
 			}
-			go func(r int64) {
-				b, err := s.block(ctx, s.Blocks, uint64(r))
-				<-slots
-				res <- fetched{b, err}
-			}(r)
+			turn := make(chan struct{})
+			go func(r int64, prev, turn chan struct{}) {
+				raw, err := s.blockRaw(ctx, s.Blocks, uint64(r))
+				<-slots // a slow block must not hold up the downloads behind it
+				var w int64
+				select {
+				case <-prev:
+				case <-ctx.Done():
+					err = ctx.Err()
+				}
+				if err == nil && sem != nil {
+					w = min(int64(len(raw))*DecodedPerWireByte, s.MemoryBudget)
+					if err = sem.Acquire(ctx, w); err != nil {
+						w = 0
+					}
+				}
+				close(turn)
+				var b types.Block
+				if err == nil {
+					b, err = s.decodeBlock(raw, uint64(r))
+				}
+				res <- fetched{b, err, w}
+			}(r, prev, turn)
+			prev = turn
 		}
 	}()
 
@@ -267,6 +312,9 @@ func (s *Scanner) backfill(ctx context.Context, next *int64, floor int64) error 
 		if err != nil {
 			return err
 		}
+		if f.weight > 0 {
+			sem.Release(f.weight)
+		}
 		*next = int64(f.b.Round) - 1
 		published += n
 		if applied++; applied >= s.Window {
@@ -279,6 +327,34 @@ func (s *Scanner) backfill(ctx context.Context, next *int64, floor int64) error 
 		return err
 	}
 	return checkpoint()
+}
+
+// blockRaw fetches one block's msgpack, retrying transient failures.
+func (s *Scanner) blockRaw(ctx context.Context, c *algod.Client, round uint64) ([]byte, error) {
+	var err error
+	for attempt := range 6 {
+		var raw []byte
+		if raw, err = c.BlockRaw(round).Do(ctx); err == nil {
+			return raw, nil
+		}
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		sleep(ctx, time.Duration(1<<attempt)*250*time.Millisecond)
+	}
+	return nil, fmt.Errorf("block %d: %w", round, err)
+}
+
+// decodeBlock decodes what blockRaw returned and checks the chain.
+func (s *Scanner) decodeBlock(raw []byte, round uint64) (types.Block, error) {
+	var resp models.BlockResponse
+	if err := msgpack.Decode(raw, &resp); err != nil {
+		return types.Block{}, fmt.Errorf("block %d: %w", round, err)
+	}
+	if resp.Block.GenesisID != s.Chain {
+		return resp.Block, fmt.Errorf("round %d belongs to %q, not %q", round, resp.Block.GenesisID, s.Chain)
+	}
+	return resp.Block, nil
 }
 
 // block fetches one block, retrying transient failures (rate limits, restarts).

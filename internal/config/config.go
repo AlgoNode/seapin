@@ -210,6 +210,7 @@ type Scan struct {
 	BackfillRounds uint64 // 0 = down to genesis
 	Window         int
 	Fetchers       int
+	MemoryBudget   int64 // bytes of decoded blocks the backfill may hold ahead
 	MaxRefsPerSec  int
 	MaxLiveLag     uint64
 	MetaDSN        string // database with x_asset_meta; empty = compat writer off
@@ -233,6 +234,7 @@ func LoadScan() (Scan, error) {
 		BackfillRounds: uint64(p.int("BACKFILL_ROUNDS", 0)),
 		Window:         p.int("BACKFILL_WINDOW", 64),
 		Fetchers:       p.int("BACKFILL_FETCHERS", 16),
+		MemoryBudget:   int64(p.int("BACKFILL_MEMORY_MB", 256)) << 20,
 		MaxRefsPerSec:  p.int("BACKFILL_MAX_REFS_PER_SEC", 200),
 		MaxLiveLag:     uint64(p.int("MAX_LIVE_LAG", 10)),
 		MetaDSN:        os.Getenv("META_PG_DSN"),

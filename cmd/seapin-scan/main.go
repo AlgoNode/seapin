@@ -71,7 +71,7 @@ func run(ctx context.Context, log *slog.Logger) error {
 	s := &scan.Scanner{
 		Chain: cfg.Chain, Algod: live, Blocks: blocks, DB: db,
 		Live: livePub, Backfill: backfillPub, Lookup: lookup(live),
-		BackfillRounds: cfg.BackfillRounds, Window: cfg.Window, Fetchers: cfg.Fetchers,
+		BackfillRounds: cfg.BackfillRounds, Window: cfg.Window, Fetchers: cfg.Fetchers, MemoryBudget: cfg.MemoryBudget,
 		MaxRefsPerSec: cfg.MaxRefsPerSec, MaxLiveLag: cfg.MaxLiveLag, Log: log,
 	}
 	if err := s.Migrate(ctx); err != nil {

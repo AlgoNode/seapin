@@ -1,11 +1,13 @@
 package scan
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -202,4 +204,42 @@ func TestBackfillPipelinesSlowBlocks(t *testing.T) {
 		t.Errorf("fetched %d distinct rounds, want 400", len(fa.fetched))
 	}
 	t.Logf("400 rounds, every 10th taking 300 ms, 32 fetchers: %v", took.Round(time.Millisecond))
+}
+
+// TestBackfillMemoryBudget runs the backfill with a budget below one block
+// (each reservation is capped at the budget) and with room for about three
+// blocks: it must neither deadlock nor reorder, with slow blocks mixed in.
+func TestBackfillMemoryBudget(t *testing.T) {
+	for _, budget := range []int64{1, 3 * 400 * DecodedPerWireByte} {
+		s := openScanner(t)
+		fa := &fakeAlgod{fetched: map[uint64]int{}, delay: func(r uint64) time.Duration {
+			if r%7 == 0 {
+				return 50 * time.Millisecond
+			}
+			return time.Millisecond
+		}}
+		fa.tip.Store(3000)
+		srv := httptest.NewServer(fa)
+		c, err := algod.MakeClient(srv.URL, "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		pub := &memPublisher{}
+		s.Algod, s.Blocks, s.Live, s.Backfill = c, c, &memPublisher{}, pub
+		s.Fetchers, s.Window, s.MaxLiveLag, s.MemoryBudget = 16, 32, 10, budget
+		s.Register(newRegistry())
+
+		next, floor := int64(2999), int64(2800)
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		err = s.backfill(ctx, &next, floor)
+		cancel()
+		srv.Close()
+		if err != nil || next != floor-1 {
+			t.Fatalf("budget %d: next %d (want %d), err %v", budget, next, floor-1, err)
+		}
+		got := pub.rounds()
+		if len(got) != 200 || !slices.IsSortedFunc(got, func(a, b uint64) int { return cmp.Compare(b, a) }) {
+			t.Fatalf("budget %d: %d refs, newest first: %v", budget, len(got), slices.IsSortedFunc(got, func(a, b uint64) int { return cmp.Compare(b, a) }))
+		}
+	}
 }
