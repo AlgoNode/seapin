@@ -648,14 +648,15 @@ Both reach ssh only through 4160mgmt. Each has a 3 TB netcup block device `vdb` 
           public IP, nginx admits only the two region hosts, UFW allows + deny-rest, `only-if-cached` forced
           (kubo: miss 412 in < 1 ms)
         - image `seapin:20261031-1`: LEGACY_URL lists both hosts, because their caches differ
-- [~] Zabbix (health, disk 70/85 %, queue depth, ingest errors, projected date for 8 TB); apilog onboarding; deploy
+- [~] Zabbix (health, disk 70/85 %, queue depth, ingest errors, projected date for 8 TB) ✓; apilog onboarding; deploy
       record; registry deploy row.
-      - **Zabbix prepared 2026-10-31, not applied:** algoup `tools/zabbix/zbx_seapin.py` builds two templates. "Nodely
-        seapin region" has 46 items and 21 triggers; "Nodely seapin scanner" (EU only) has 10 items and 4 triggers.
-        Both read through the host's agent2 on 127.0.0.1. Tested against a fake API only, because the Zabbix token's
-        KeePassXC tab was not active.
-      - To apply: `uv run python tools/zabbix/zbx_seapin.py`, then `--apply`; check after > 60 s that every item has a
-        value.
+      - **Zabbix linked to net-de-nur-ipfs since 2026-10-31 00:31 UTC.** algoup `tools/zabbix/zbx_seapin.py` builds
+        two templates, both read through the host's agent2 on 127.0.0.1:
+        - "Nodely seapin region" (10833): 49 items, 24 triggers; it also watches the backup and face containers
+        - "Nodely seapin scanner" (10834, EU only): 10 items, 4 triggers
+      - Checked live:
+        - 55 of 59 items have values and none are unsupported (the 4 without are history-0 raw pages)
+        - the two triggers that fired spuriously right after linking are guarded (`233f547`, apply pending)
       - Deploy record and registry row: done for each rollout.
       - Still open: apilog onboarding, with the public face.
       - The seed brings the referenced set (1.88 TB, M0) onto the 3 TB volume (3.1 TiB): about 55–60 % used, near the
