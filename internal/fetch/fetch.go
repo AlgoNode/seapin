@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"io"
 	"maps"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -66,7 +67,18 @@ type Fetcher struct {
 	Client  *http.Client
 	Store   Store
 	Limits  Limits
+
+	down sync.Map // source name -> time.Time: a cache-only source that refused or timed out a connection, skipped until then
 }
+
+// SourceBackoff is how long a cache-only source (MissOK) is skipped after a
+// connection to it failed, so a dead peer region costs one connect attempt per
+// period rather than one per fetch.
+const SourceBackoff = 30 * time.Second
+
+// ConnectTimeout bounds a TCP connect to any source, well inside every lane's
+// first-byte deadline.
+const ConnectTimeout = 3 * time.Second
 
 // Result is the leaf object a fetch produced, stored (cached) or refused (blocked).
 type Result struct {
@@ -99,6 +111,7 @@ func NewClient() *http.Client {
 	return &http.Client{
 		Transport: &http.Transport{
 			Proxy:               nil,
+			DialContext:         (&net.Dialer{Timeout: ConnectTimeout, KeepAlive: 30 * time.Second}).DialContext,
 			MaxIdleConnsPerHost: 64,
 			DisableCompression:  true,
 			IdleConnTimeout:     90 * time.Second,
@@ -123,7 +136,7 @@ func (f *Fetcher) Fetch(ctx context.Context, root, subpath string, ttfb time.Dur
 	}
 	var errs []error
 	for _, src := range f.Sources {
-		if src.SlowOnly && !slow {
+		if src.SlowOnly && !slow || f.skipped(src) {
 			continue
 		}
 		res, err := f.fromSource(ctx, src, root, subpath, ttfb)
@@ -176,6 +189,9 @@ func (f *Fetcher) fromSource(parent context.Context, src Source, root, subpath s
 	maps.Copy(req.Header, src.Header)
 	resp, err := f.Client.Do(req)
 	if err != nil {
+		if src.MissOK && isConnectErr(err) {
+			f.down.Store(src.Name, time.Now().Add(SourceBackoff))
+		}
 		return Result{}, causeOf(ctx, err)
 	}
 	defer resp.Body.Close()
@@ -249,6 +265,26 @@ func (f *Fetcher) fromSource(parent context.Context, src Source, root, subpath s
 		res.JSON = jsonBuf.Bytes()
 	}
 	return res, nil
+}
+
+// skipped reports whether src is a cache-only source in its connect backoff.
+func (f *Fetcher) skipped(src Source) bool {
+	until, ok := f.down.Load(src.Name)
+	if !ok {
+		return false
+	}
+	if time.Now().Before(until.(time.Time)) {
+		return true
+	}
+	f.down.CompareAndDelete(src.Name, until)
+	return false
+}
+
+// isConnectErr is a failure to open the TCP connection (refused, unreachable,
+// connect timeout), as opposed to a slow or failing answer.
+func isConnectErr(err error) bool {
+	var op *net.OpError
+	return errors.As(err, &op) && op.Op == "dial"
 }
 
 func objectURL(base, root, subpath string) string {

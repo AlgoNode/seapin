@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -262,5 +263,35 @@ func TestFetchLegacyOnlyIfCached(t *testing.T) {
 	f, _ = newFetcher(srcs...)
 	if res, err := f.Fetch(context.Background(), leaf, "", time.Second, false); err != nil || res.Source != "legacy" || sidecar.hits.Load() != 1 {
 		t.Errorf("legacy hit: %+v %v, sidecar hits %d", res, err, sidecar.hits.Load())
+	}
+}
+
+func TestFetchDeadPeerBackoff(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	dead := "http://" + ln.Addr().String()
+	ln.Close() // connections to it are refused now
+	kubo := serve(t, file(png, leaf))
+	f, _ := newFetcher(
+		Source{Name: "peer", BaseURL: dead, MissOK: true},
+		Source{Name: "sidecar-dead", BaseURL: dead + "/x"},
+		Source{Name: "kubo", BaseURL: kubo.URL},
+	)
+	start := time.Now()
+	res, err := f.Fetch(context.Background(), leaf, "", 10*time.Second, false)
+	if err != nil || res.Source != "kubo" || time.Since(start) > 2*time.Second {
+		t.Fatalf("dead peer: %+v %v after %v", res, err, time.Since(start))
+	}
+	if !f.skipped(f.Sources[0]) {
+		t.Error("refused cache-only source not in backoff")
+	}
+	if f.skipped(f.Sources[1]) {
+		t.Error("a source that is not cache-only must never be skipped")
+	}
+	f.down.Store("peer", time.Now().Add(-time.Second))
+	if f.skipped(f.Sources[0]) {
+		t.Error("backoff did not expire")
 	}
 }
