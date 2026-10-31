@@ -658,8 +658,12 @@ Both reach ssh only through 4160mgmt. Each has a 3 TB netcup block device `vdb` 
       - Still open: apilog onboarding, with the public face.
       - The seed brings the referenced set (1.88 TB, M0) onto the 3 TB volume (3.1 TiB): about 55–60 % used, near the
         70 % grow trigger.
-- [ ] Resize drill: grow the volume a little online, run `xfs_growfs`, confirm SeaweedFS reports more free slots
+- [~] Resize drill: grow the volume a little online, run `xfs_growfs`, confirm SeaweedFS reports more free slots
       with no restart.
+      - SeaweedFS side checked 2026-10-31 on 4.45 with `-volume.max=0`: a data filesystem grown in place took Max
+        from 15 to 31 within one heartbeat (≤ 10 s), with no restart (algoup `deploy/seaweed-nft` README, Growing).
+      - Left for the operator: enlarge vdb a little in the netcup panel, then run `xfs_growfs /mnt/seaweed` and
+        check `dir/status`.
 - [~] Shadow comparison against the current gateway on sampled requests (status, type, bytes):
       `scripts/shadow-compare.py` (README). **Baseline 2026-10-31 00:07 UTC**, taken while the backfill was still
       running (at round ~66.2 M), so a low hit rate was expected:
