@@ -688,6 +688,10 @@ type leaking through, and the share of requests that will 404 (unreferenced CIDs
       - **US stack up 2026-10-31 08:25 UTC** on net-us-ash-ipfs (`rollout.sh us all`, legacy seed from ipfs-1/2):
         `seapin.us` consumed, backups and the face running. Refs published before 08:25 still need republishing
         from the EU catalog; Zabbix not linked yet; peer endpoint not built.
+      - **Republish prepared 2026-10-31:** `seapin republish` (`86b0263`) sends a region's catalog refs to one queue
+        through the direct exchange `seapin.direct` (also the anti-entropy path), paced by queue depth; image
+        `seapin:20261031-4`; algoup `rollout.sh us republish`. Zabbix region template extended to the US (algoup
+        `2abff81`), not applied.
 - [ ] Serve path: on a local miss, proxy from the peer region's cache when it has the CID, and nudge local ingest (D2).
 - [ ] Daily anti-entropy both ways; `takedown` messages honoured in both regions.
 - [ ] Drill: stop EU ingest for 1 h while publishing, restore, confirm convergence. Rebuild a scratch region from the
