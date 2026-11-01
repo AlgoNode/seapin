@@ -110,13 +110,9 @@ func (s *Scanner) applyAll(t *testing.T, src string, evs ...Event) []contract.Re
 		t.Fatal(err)
 	}
 	defer tx.Rollback(ctx)
-	var refs []contract.Ref
-	for _, ev := range evs {
-		r, err := s.apply(ctx, tx, ev, src)
-		if err != nil {
-			t.Fatal(err)
-		}
-		refs = append(refs, r...)
+	refs, err := s.applyEvents(ctx, tx, evs, src)
+	if err != nil {
+		t.Fatal(err)
 	}
 	if err := tx.Commit(ctx); err != nil {
 		t.Fatal(err)

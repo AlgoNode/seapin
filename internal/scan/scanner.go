@@ -400,13 +400,9 @@ func (s *Scanner) processBlockCounted(ctx context.Context, b types.Block, src st
 		return 0, err
 	}
 	defer tx.Rollback(ctx)
-	var refs []contract.Ref
-	for _, ev := range evs {
-		r, err := s.apply(ctx, tx, ev, src)
-		if err != nil {
-			return 0, fmt.Errorf("asset %d at round %d: %w", ev.Asset, ev.Round, err)
-		}
-		refs = append(refs, r...)
+	refs, err := s.applyEvents(ctx, tx, evs, src)
+	if err != nil {
+		return 0, err
 	}
 	pub := s.Live
 	if src == contract.SrcBackfill {
