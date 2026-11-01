@@ -46,6 +46,7 @@ type Ingest struct {
 	SidecarURL  string // IPFS gateway sidecar (rainbow, D1)
 	LegacyURL   string // old gateway caches, comma-separated, only-if-cached; migration only (M4–M6)
 	PeerURL     string // the other region's internal listener; optional
+	PeerFirst   bool   // ask the peer before the legacy caches (default true)
 	PeerToken   string
 	PinataURL   string // optional last source, slow lanes only
 	PinataToken string
@@ -72,6 +73,7 @@ func LoadIngest() (Config, Ingest, error) {
 		LegacyURL:   os.Getenv("LEGACY_URL"),
 		PeerURL:     os.Getenv("PEER_URL"),
 		PeerToken:   os.Getenv("PEER_TOKEN"),
+		PeerFirst:   os.Getenv("PEER_FIRST") != "false",
 		PinataURL:   os.Getenv("PINATA_URL"),
 		PinataToken: os.Getenv("PINATA_TOKEN"),
 

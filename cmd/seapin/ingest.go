@@ -39,11 +39,19 @@ func runIngest(ctx context.Context, log *slog.Logger) error {
 	defer cat.Close()
 
 	var sources []fetch.Source
+	var peer []fetch.Source
 	if ing.PeerURL != "" {
-		sources = append(sources, fetch.Source{
+		peer = append(peer, fetch.Source{
 			Name: "peer", BaseURL: ing.PeerURL + "/internal", MissOK: true,
 			Header: http.Header{"Authorization": {"Bearer " + ing.PeerToken}},
 		})
+	}
+	// The peer comes first by design (one HTTP GET instead of another IPFS
+	// fetch). PEER_FIRST=false puts it after the legacy caches, for a region
+	// whose path to the peer is worse than to the old gateway (EU, 2026-11-01:
+	// netcup US -> EU delivered ~10 MB/s over 120 streams, Helsinki is 30 ms away).
+	if ing.PeerFirst {
+		sources = append(sources, peer...)
 	}
 	// The old gateway's caches (one per host, each holding different objects)
 	// have most historical content the network no longer serves (M0 spike);
@@ -58,6 +66,9 @@ func runIngest(ctx context.Context, log *slog.Logger) error {
 			Name: name, BaseURL: strings.TrimSpace(u), MissOK: true,
 			Header: http.Header{"Cache-Control": {"only-if-cached"}},
 		})
+	}
+	if !ing.PeerFirst {
+		sources = append(sources, peer...)
 	}
 	sources = append(sources, fetch.Source{Name: "sidecar", BaseURL: ing.SidecarURL})
 	if ing.PinataURL != "" {
