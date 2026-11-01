@@ -739,8 +739,10 @@ Exit: the old gateway receives no traffic for 2 weeks; fill rate tracked against
 - [ ] `seapin pin` (API + worker) per region, implementing the IPFS Pinning Service API (`/pins`) plus an upload
       endpoint; tokens and quotas from the portal feed; `pin` / `unpin` on a RabbitMQ fanout `seapin.pins`,
       per-region status back on `seapin.events`.
-- [ ] Pin node per region: kubo with a pinned-only blockstore on its own volume, `Provide.Strategy`
-      `pinned+entities`, sweep provider, public libp2p (4001 TCP + QUIC), peered with the other region's pin node.
+- [ ] Pin nodes on **htz-hel-ipfs-1 and htz-hel-ipfs-2** (operator, 2026-11-01), a fresh kubo on each **after M6**
+      (cache migrated, old kubo + ipfs-cluster retired, repo wiped): pinned-only blockstore on `/mnt/lv0`,
+      `Provide.Strategy` `pinned+entities`, sweep provider, public libp2p (4001 TCP + QUIC), peered with each other
+      over the VLAN (`ndly4k` 192.168.4.31 / .32).
 - [ ] Gateway: pinned CIDs served for the tenant's verified sites and its token, from the pin node, through the same
       openresty face; ingest asks the local pin node first, so a pin later burned into an ASA enters the cache in
       seconds.
@@ -799,6 +801,21 @@ cache; pins and the cache will overlap once pinned content is burned into mainne
   blockstore and does not provide (to verify with an outside `findprovs` at M7, see Exit).
 
 ### Design
+
+**Placement (P3, decided by the operator 2026-11-01):** the pin nodes are a fresh kubo on **htz-hel-ipfs-1 and
+htz-hel-ipfs-2**, deployed once the cache has moved to seapin (M6: legacy seed verified, `legacy-endpoint.sh
+remove`, old kubo and ipfs-cluster retired, repo wiped). The diagram below was drawn for per-region pin nodes; with
+this placement the "EU" and "US" boxes of the pin layer are ipfs-1 and ipfs-2, both in Helsinki:
+
+- **1+1 inside one site.** Both copies are in Hetzner Helsinki: a lost disk or host is covered, a lost site is not.
+  An off-site copy (a third kubo, or the US seapin host pinning a subset) is a later option, not part of M7.
+- **Replication over the VLAN.** The two pin nodes peer on 192.168.4.31 / .32; the second copy never crosses the
+  public internet and costs no transit.
+- **RabbitMQ is local:** ipfs-1 is rabbit02 and ipfs-2 rabbit03, so the pin workers use their own node.
+- **Gateway reads of pins** come from the seapin regions (nur, ash) over the public internet: the pattern of the M4
+  legacy endpoint (`:8101`, only-if-cached, UFW to the seapin hosts) is reused against the pin kubo, as ingest's
+  first source and as serve's pin lookup. From ash that is a transatlantic hop (~110 ms) per uncached pin read.
+- **Pin API** runs beside the workers on ipfs-1/2 behind their openresty, on its own public name.
 
 ```
  customer / portal ──HTTPS──> pin.<name> (openresty face, geo-steered like the gateway)
@@ -884,13 +901,16 @@ network. The bytes are then stored twice per region (DAG blocks in the pin node,
 
 ### Hardware challenges
 
-- **Storage: every pinned byte costs 2× (EU + US), plus the cache copy where it overlaps.** The current 3.1 TB
-  netcup volumes are sized for the cache (M0: 1.88 TB referenced set, ~60% after the seed). Pins need their own
-  block device per host (netcup storage, up to 8 TB each): separate fill and failure domain, own grow trigger.
-- **Memory: the hosts are already full.** 16 GB per host; limits today: seaweed 6g, rainbow 2g, ingest 2g, serve 1g,
-  scanner 2g (EU), Postgres, openresty. A DHT-server kubo with the sweep provider needs ~2–4 GB and spikes with
-  connections. Either upgrade both hosts to 32 GB or run the pin nodes on their own small VPS per region (isolates
-  DHT connection churn and UDP from the gateway; P3).
+- **Storage: every pinned byte costs 2× (ipfs-1 + ipfs-2), plus the seapin cache copy where it overlaps.** Each
+  host has a 7 TB NVMe LV (`/mnt/lv0`, 59% / 73% used on 2026-11-01, of which kubo's cache is 2.3 / 2.4 TB). Wiping
+  the old repo frees roughly 5.2 TB (ipfs-1) and 4.4 TB (ipfs-2), shared with the hosts' other tenants (Monero,
+  gno, Graylog, ClickHouse on ipfs-1). Pin capacity is the smaller host's free space minus their growth: about
+  4 TB of pins (1+1) without new disks. Give kubo `Datastore.StorageMax` and a Zabbix grow trigger per host.
+- **CPU and memory are not the constraint:** 32 cores and 125 GB per host. But these hosts are shared and busy
+  (ipfs-2 runs at load ~14 on its own), so set ResourceMgr / ConnMgr limits and a `mem_limit` on the kubo container.
+- **The old cache is wiped, not migrated.** The repos hold 2.94 TB of unique blocks (§0); seapin keeps only the
+  referenced, allowed set (M0: 1.88 TB). Anything else is gone from Nodely after the wipe and comes back only through
+  read-through. The current repos have 2 recursive pins; check whom they belong to before the wipe.
 - **Network:** DHT server mode means thousands of connections and steady inbound UDP; bitswap egress for popular
   pins is unmetered and unauthenticated (it cannot be billed per tenant), so price pins on stored bytes, and meter
   only gateway egress (apilog). Check netcup's traffic policy for the volume.
@@ -911,7 +931,7 @@ and abuse contact details in the portal terms.
 |---|---|---|---|
 | P1 | Pin storage | own kubo per region on its own volume, not a SeaweedFS bucket | providing without a filter; no custom kubo build; kubo GC handles unpins |
 | P2 | Replication | both regions pin everything (fanout + peering + daily anti-entropy) | 1+1 with no cluster consensus; same pattern as the cache |
-| P3 | Where pin nodes run | own small VPS per region (or the current hosts upgraded to 32 GB) | the current hosts have no RAM left; DHT churn kept off the gateway |
+| P3 | Where pin nodes run | **decided 2026-11-01: htz-hel-ipfs-1 and htz-hel-ipfs-2, a fresh kubo after M6** | 32 cores, 125 GB, 7 TB NVMe each, VLAN between them; both in Helsinki (no site redundancy) |
 | P4 | Quotas per tier | Boost: small (e.g. 5 GB / 1,000 pins), Unlimited: large with fair use; upload cap per request | pricing is the operator's; quotas go into `TIER_LIMITS` |
 | P5 | Content policy for pins | any type stored and provided; gateway serves the D3 allowlist with CSP sandbox; takedown on both | pins are customer data; our gateway keeps its policy |
 | P6 | Provide strategy | `pinned+entities` with the sweep provider | ~1 record per file instead of per 256 KiB chunk |
