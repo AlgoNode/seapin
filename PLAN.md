@@ -81,6 +81,22 @@ chain, and a policy check on the hit path as well as the miss path.
 | htz-hel-ipfs-1 | 2.3 TB | 19.3 M | 4 TB |
 | htz-hel-ipfs-2 | 2.4 TB | 29.2 M | 4 TB |
 
+**Overlap of the two repos (measured 2026-11-01, block level):** every flatfs block file (named by its multihash)
+listed on both hosts with its size, then merged.
+
+| | blocks | TB |
+|---|---|---|
+| ipfs-1 | 19,348,957 | 2.335 |
+| ipfs-2 | 29,178,507 | 2.393 |
+| sum of both | 48,527,464 | 4.728 |
+| on both hosts (duplicates) | 14,171,746 | 1.785 |
+| only on ipfs-1 / only on ipfs-2 | 5,177,211 / 15,006,761 | 0.550 / 0.608 |
+| **unique content (union)** | **34,355,718** | **2.943** |
+
+So the old gateway holds **2.94 TB of distinct content**; 1.79 TB (38% of the 4.73 TB on disk) is the same block on
+both hosts. The union counts every block once: DAG and directory nodes, content types seapin refuses, and objects no
+ASA references. Against that, seapin keeps the referenced, allowed set (M0: 1.88 TB), as whole files.
+
 M0 measured the ASA-referenced set itself: **1.88 TB in 3.91 M root CIDs, growing ~0.1–0.14 GB/day** (§3 M0).
 These repos also hold everything users ever fetched through the gateway, not just ASA-referenced objects. Each new
 server starts with 3 TB and can grow online, cheaply, to **8 TB** (operator, 2026-10-30): about 3× today's repos.
