@@ -715,6 +715,28 @@ Exit: the catalog diff between regions stays under 0.1% of CIDs 24 h after the d
 
 Exit: the old gateway receives no traffic for 2 weeks; fill rate tracked against the 70% grow trigger.
 
+### M7: pinning service for the Boost / Unlimited tiers (research 2026-11-01, see §5)
+- [ ] Operator decisions P1–P8 (§5 Open decisions).
+- [ ] Portal: `features.ipfsPinning`, `limits.pinBytes` / `limits.pinCount` in `TIER_FEATURES` / `TIER_LIMITS`, the
+      edge-config feed gains them (add fields, never rename), a pin page per endpoint (list, add by CID, upload,
+      remove, usage bar).
+- [ ] `seapin pin` (API + worker) per region, implementing the IPFS Pinning Service API (`/pins`) plus an upload
+      endpoint; tokens and quotas from the portal feed; `pin` / `unpin` on a RabbitMQ fanout `seapin.pins`,
+      per-region status back on `seapin.events`.
+- [ ] Pin node per region: kubo with a pinned-only blockstore on its own volume, `Provide.Strategy`
+      `pinned+entities`, sweep provider, public libp2p (4001 TCP + QUIC), peered with the other region's pin node.
+- [ ] Gateway: pinned CIDs served for the tenant's verified sites and its token, from the pin node, through the same
+      openresty face; ingest asks the local pin node first, so a pin later burned into an ASA enters the cache in
+      seconds.
+- [ ] Usage to ClickHouse (pinned bytes and count per `ld`, daily), read by the portal like `apilog_hourly`
+      (**nodely-clickhouse** gate).
+- [ ] Daily pin anti-entropy both ways; unpin + GC; takedown honoured on the pin nodes too.
+- [ ] Drill: lose one region's pin volume, rebuild it from the other over the peering link, measure the time.
+
+Exit: a tenant on each tier can pin by CID and by upload from the API and the portal; every pin is held and
+provided by both regions within 10 min (P95); `ipfs routing findprovs` from an outside node lists both pin nodes
+for a sample of pinned roots; nothing from the free cache is provided (sample of cached CIDs: no Nodely provider).
+
 ## 4. Decisions
 
 Decided by the operator on 2026-10-30:
@@ -739,3 +761,143 @@ Still open (recommendation first):
 |---|---|---|---|
 | D6 | Region steering | Cloudflare Load Balancer geo steering + `/health` monitors | failover without DNS TTL waits; check how it fits behind the current CDN (Bunny, see the `/bunny` check and `-nobunny` hosts) |
 | D8 | "Upload date" | block time of the first referencing txn (`first_seen_at`), plus `cached_at` | the chain time is what "uploaded" means for an ASA |
+
+## 5. Pinning service (research, 2026-11-01)
+
+**Ask (operator, 2026-11-01):** an IPFS pinning service as part of the Boost and Unlimited tiers: an API,
+whitelisting and pin management in nodely-portal; pinned content provided to the DHT **without** providing the free
+cache; pins and the cache will overlap once pinned content is burned into mainnet assets; 1+1 redundancy.
+
+### What exists today (facts)
+
+- **Portal** (`~/dev/_production/web/nodely-portal`, Next.js 16 + Drizzle/Postgres, Postgres job queue, no RabbitMQ):
+  tiers free | boost | unlimited | enterprise in `src/lib/tiers.ts` (`TIER_LIMITS`, `TIER_FEATURES`; Boost $19.99/mo,
+  Unlimited $256/mo per `TODO.md`). `ipfsGateway` is a feature of Unlimited and Enterprise only (Boost excluded,
+  operator 2026-10-29). Endpoints carry plaintext 32-hex tokens, verified sites (DNS TXT or `/.well-known`) and IPs;
+  the versioned JSON feed `GET /api/internal/edge-config` (Bearer per scope, ETag) delivers them to the edges every
+  2 min. `portal_edge_pull.py --ipfs-out` already renders verified sites of IPFS-enabled endpoints into an
+  `$allowed_referer` map for the old gateway (draft, blocked). No pinning, storage quota or upload code exists.
+- **Old gateway** (ipfs-1/2): kubo 0.43-dev, flatfs, **providing disabled** (`Provide.Enabled=false`), 2 recursive
+  pins; ipfs-cluster (CRDT, replication 1–2, `pinsvcapi` on 127.0.0.1:9097). Nodely announces nothing to the DHT today.
+- **seapin**: the free cache is whole objects in SeaweedFS bucket `ipfs`, append-only. rainbow fetches with a scratch
+  blockstore and does not provide (to verify with an outside `findprovs` at M7, see Exit).
+
+### Design
+
+```
+ customer / portal ──HTTPS──> pin.<name> (openresty face, geo-steered like the gateway)
+                                 │  token + quota from the portal feed
+                     ┌───────────┴───────────┐
+               seapin pin API (EU)       seapin pin API (US)      any region accepts writes
+                     │ pin/unpin fanout `seapin.pins` (RabbitMQ, quorum queue per region)
+               pin worker (EU)           pin worker (US)
+                     │                       │
+               kubo pin node (EU) <──peering/bitswap──> kubo pin node (US)
+               own volume, provides          own volume, provides
+               pinned+entities               pinned+entities
+                     │                       │
+                  Amino DHT (both regions are providers of every pin)
+```
+
+1. **Separate node, separate storage, not a separate bucket.** Pins live in a dedicated kubo per region whose
+   blockstore holds only pinned DAGs, on its own block device (flatfs, as on ipfs-1/2). The cache never enters that
+   blockstore, so it cannot be provided or served over bitswap; providing needs no filter. A SeaweedFS bucket for
+   pins would need kubo's S3 datastore plugin (custom kubo build) and SeaweedFS vacuum for every unpin, and pins and
+   cache would still not share bytes (DAG blocks vs whole files). The pin node's own gateway stays on 127.0.0.1 and
+   offline, so nothing but pins ever lands in it (GC removes anything else).
+2. **Replication 1+1 = both regions pin everything.** The API that receives a request records it and publishes
+   `pin {requestid (UUIDv7), ld, cid, name, meta}` on `seapin.pins`; each region's worker pins it on its own node. The
+   two pin nodes are in each other's `Peering.Peers`, so the second region fetches the blocks straight from the first
+   over bitswap, not via the DHT. Status per region comes back on `seapin.events`; the API answers `pinned` as soon as
+   one region holds it and shows per-region state in `info`. A daily anti-entropy compares each node's pin set with
+   the catalog both ways (same pattern as §2). Unpin: `unpin {requestid}` on the fanout, then kubo GC on a schedule.
+3. **API = the IPFS Pinning Service API** (`GET/POST /pins`, `GET/POST/DELETE /pins/{requestid}`), so kubo
+   `ipfs pin remote`, Helia and existing Pinata-style tooling work unchanged, plus an upload endpoint (multipart →
+   `ipfs add`, CIDv1, raw leaves, fixed chunker, so the CID a customer computes locally matches). Implemented in
+   seapin (Go), not ipfs-cluster's `pinsvcapi`: that one is experimental, single-tenant (no owner per pin, no
+   quotas) and would bring CRDT consensus for a 2-peer cluster.
+4. **Tenancy, tokens, quotas from the portal.** The pin API pulls the edge-config feed (a new Bearer scope) like the
+   edges: an endpoint token authorises its `ld`; `features.ipfsPinning`, `limits.pinBytes`, `limits.pinCount`
+   bound it. Pin catalog per region (Postgres, the seapin sidecar), keyed by requestid, with owner `ld`, CID, size
+   (DAG size after pinning), status per region. Usage (bytes, count per `ld`, daily) goes to ClickHouse; the portal
+   reads it as it reads `apilog_hourly` and adds a pin page that calls the pin API with a portal service token.
+5. **Gateway access to pins.** openresty already sends `X-Seapin-Whitelisted` / `X-Seapin-Site`; the portal's
+   verified sites (the `--ipfs-out` map, retargeted from ipfs-1/2 to seapin's face) and the endpoint token
+   (`?token=` / header, server-side fetches) unlock a tenant's pins. serve: local cache → **pin node (offline,
+   localhost)** → existing miss path. Pinned content is served with the same content-type allowlist, CSP sandbox
+   and nosniff as the cache (D3, D4); bitswap delivers raw bytes to anyone, which is the point of pinning.
+
+### Overlap between pins and the cache
+
+A pin burned into an ASA becomes a chain reference: the scanner publishes it, ingest fetches it. With the pin node
+as ingest's first source (localhost, only-if-cached) the cache copy is made in seconds and never touches the
+network. The bytes are then stored twice per region (DAG blocks in the pin node, a file in the cache). Options:
+
+- **A (recommended to start): keep the copy.** The cache stays independent of the paid lifecycle: when a customer
+  unpins, chain-referenced content stays served. Cost: the overlapping bytes once more per region. Measure it
+  (`objects` joined with the pin catalog) from day one.
+- **B (later, if the overlap is large): pin-backed cache entries.** The catalog marks an object `pinned` and serve
+  reads it from the pin node; ingest copies it into the bucket only when the last pin on it is removed (an unpin
+  hook before GC). No duplicate bytes, but the cache then depends on pin lifecycle and GC ordering.
+- Reverse overlap (a customer pins something already cached): for raw single-block CIDs (`bafkrei…`) the worker
+  can `block put` the cached file straight into the pin node; DAGs come from the network, the legacy caches until
+  M6, or the other region.
+
+### DHT challenges
+
+- **Volume.** Provider records are per block unless limited. 1 TB of pins at kubo's default 256 KiB chunks is about
+  4 M blocks per region, each record stored on 20 DHT servers and refreshed every 22 h: ~1,000 ADD_PROVIDER RPCs/s
+  per region with strategy `pinned`. **`pinned+entities`** announces only file, directory and HAMT roots; NFT media
+  is mostly single files, so that is about one record per file, orders of magnitude fewer. Trade-off (kubo docs):
+  a client that lost its connection mid-file cannot find a provider for an inner chunk by its CID; clients
+  connected to us get chunks over the bitswap session anyway.
+- **Legacy provider does not scale**: kubo docs put it below ~10,000 CIDs per 22 h. The **sweep provider**
+  (`Provide.DHT.SweepEnabled`, default since 0.39) batches by keyspace region: ~97% fewer lookups, bounded at
+  ~3,000 lookups per cycle on a ~10k-peer DHT however many CIDs, smooth load instead of the accelerated client's
+  hourly crawl bursts. `+entities` implies `+unique` (bloom filter: ~42 MB of RAM for 10 M CIDs instead of
+  ~750 MB). Raise `Provide.DHT.MaxWorkers` only when `ipfs provide stat` shows the cycle falling behind.
+- **Reachability.** A provider must be dialable: libp2p 4001 TCP and UDP (QUIC) open in UFW on the pin hosts,
+  public addresses announced, AutoTLS (secure WebSockets) so browser clients (Helia, service workers) can fetch
+  directly. Reachable nodes become DHT servers: they store other peers' records and answer queries (steady inbound
+  traffic, thousands of connections; ConnMgr/ResourceMgr limits and conntrack sizing needed).
+- **Two providers per CID** (EU and US): double the provide work, but a lost region keeps every pin discoverable.
+- **Discovery latency.** A fresh pin is findable once its first provide lands (fast-provide-root on `pin add`,
+  seconds to a minute); IPNI (cid.contact) via an index provider would make lookups single-hop for gateways that
+  use delegated routing. Optional, later.
+- **No leak of the cache:** guaranteed by construction (1.); the M7 exit samples it from an outside node.
+
+### Hardware challenges
+
+- **Storage: every pinned byte costs 2× (EU + US), plus the cache copy where it overlaps.** The current 3.1 TB
+  netcup volumes are sized for the cache (M0: 1.88 TB referenced set, ~60% after the seed). Pins need their own
+  block device per host (netcup storage, up to 8 TB each): separate fill and failure domain, own grow trigger.
+- **Memory: the hosts are already full.** 16 GB per host; limits today: seaweed 6g, rainbow 2g, ingest 2g, serve 1g,
+  scanner 2g (EU), Postgres, openresty. A DHT-server kubo with the sweep provider needs ~2–4 GB and spikes with
+  connections. Either upgrade both hosts to 32 GB or run the pin nodes on their own small VPS per region (isolates
+  DHT connection churn and UDP from the gateway; P3).
+- **Network:** DHT server mode means thousands of connections and steady inbound UDP; bitswap egress for popular
+  pins is unmetered and unauthenticated (it cannot be billed per tenant), so price pins on stored bytes, and meter
+  only gateway egress (apilog). Check netcup's traffic policy for the volume.
+- **IOPS:** flatfs means one file per block on network-backed volumes; kubo GC (`repo gc`) walks the whole store and
+  slows down at tens of millions of blocks; GC rarely (unpins only), off-peak.
+- **Uploads:** the API host buffers uploads to the pin node; cap request size per tier (P4) and stream to `ipfs add`.
+
+### Abuse and content policy
+
+Pinned content is publicly reachable over bitswap through any IPFS gateway, not only ours, so a phishing page
+pinned with us is served by third-party gateways from our node. Needed before launch: a takedown path (unpin in both
+regions + 451 in our gateway, the existing takedown table extended to pins), a content-type policy for uploads (P5),
+and abuse contact details in the portal terms.
+
+### Open decisions (recommendation first)
+
+| # | decision | recommendation | why |
+|---|---|---|---|
+| P1 | Pin storage | own kubo per region on its own volume, not a SeaweedFS bucket | providing without a filter; no custom kubo build; kubo GC handles unpins |
+| P2 | Replication | both regions pin everything (fanout + peering + daily anti-entropy) | 1+1 with no cluster consensus; same pattern as the cache |
+| P3 | Where pin nodes run | own small VPS per region (or the current hosts upgraded to 32 GB) | the current hosts have no RAM left; DHT churn kept off the gateway |
+| P4 | Quotas per tier | Boost: small (e.g. 5 GB / 1,000 pins), Unlimited: large with fair use; upload cap per request | pricing is the operator's; quotas go into `TIER_LIMITS` |
+| P5 | Content policy for pins | any type stored and provided; gateway serves the D3 allowlist with CSP sandbox; takedown on both | pins are customer data; our gateway keeps its policy |
+| P6 | Provide strategy | `pinned+entities` with the sweep provider | ~1 record per file instead of per 256 KiB chunk |
+| P7 | Pin/cache overlap | A (keep the copy), measure, revisit B if overlap > ~20% of pinned bytes | keeps the free cache independent of paid lifecycle |
+| P8 | Boost and the gateway | pins of Boost endpoints served through the gateway only for their own verified sites and token | Boost has no `ipfsGateway` today; pins without a way to read them back over HTTP would be odd |
