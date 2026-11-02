@@ -35,6 +35,10 @@ const (
 	// link inside an ARC-69 note ("note/media_url").
 	PathURL        = "url"
 	PathNotePrefix = "note/"
+	// PathImportPrefix marks refs imported from an outside list rather than
+	// read from the chain ("import/<class>", e.g. the one-off import of
+	// destroyed assets' objects from x_asset_meta, 2026-11-02).
+	PathImportPrefix = "import/"
 )
 
 // Ref is one chain-level reference: an asset's URL field or a link in its
@@ -133,6 +137,9 @@ func validPath(p string) bool {
 		return true
 	}
 	rest, ok := strings.CutPrefix(p, PathNotePrefix)
+	if !ok {
+		rest, ok = strings.CutPrefix(p, PathImportPrefix)
+	}
 	if !ok || rest == "" {
 		return false
 	}

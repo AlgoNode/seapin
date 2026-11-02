@@ -38,6 +38,8 @@ func TestRefValidation(t *testing.T) {
 		"path":         func(r *Ref) { r.Path = "url/image"; r.Key = KeyOf(r.Chain, r.Asset, r.Path) },
 		"empty note":   func(r *Ref) { r.Path = "note/"; r.Key = KeyOf(r.Chain, r.Asset, r.Path) },
 		"note nul":     func(r *Ref) { r.Path = "note/a\x00"; r.Key = KeyOf(r.Chain, r.Asset, r.Path) },
+		"empty import": func(r *Ref) { r.Path = "import/"; r.Key = KeyOf(r.Chain, r.Asset, r.Path) },
+		"other prefix": func(r *Ref) { r.Path = "imports/img"; r.Key = KeyOf(r.Chain, r.Asset, r.Path) },
 		"key mismatch": func(r *Ref) { r.Key = "x" },
 		"src":          func(r *Ref) { r.Src = "other" },
 		"round 0":      func(r *Ref) { r.Round = 0 },
@@ -57,6 +59,11 @@ func TestRefValidation(t *testing.T) {
 	r.Key = KeyOf(r.Chain, r.Asset, r.Path)
 	if err := r.Validate(); err != nil {
 		t.Errorf("note path: %v", err)
+	}
+	r.Path = PathImportPrefix + "img"
+	r.Key = KeyOf(r.Chain, r.Asset, r.Path)
+	if err := r.Validate(); err != nil {
+		t.Errorf("import path: %v", err)
 	}
 }
 
