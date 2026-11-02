@@ -752,7 +752,8 @@ Exit: the catalog diff between regions stays under 0.1% of CIDs 24 h after the d
         reresolve and the destroyed-asset import: all x_asset_meta objects cached EU 98.57% / US 97.69%; **live-asset
         objects 99.46% in both regions** (superseded versions and policy refusals out of the denominator; 8,911
         retries pending, 9 with no ref). Destroyed-asset content still filling (EU 33 k, US 69 k pending).
-        Retirement waits for the retry ladder (last retries ~2026-11-09) while the legacy caches still answer them.
+        **Operator 2026-11-02: retire the legacy caches right after the cutover** (remaining retries rely on rainbow
+        and Pinata).
 - [ ] At promotion: re-enable the disk-forecast triggers quieted for pre-production
       (`algoup tools/zabbix/zbx_seapin_preprod.py --off`, 2026-11-02).
 - [x] Disk: no resize needed (operator 2026-11-02). New chain content is ~1,000 objects / ~60 MB a day (assets
@@ -764,7 +765,7 @@ Exit: the catalog diff between regions stays under 0.1% of CIDs 24 h after the d
 
 Exit: the old gateway receives no traffic for 2 weeks; fill rate tracked against the 70% grow trigger.
 
-### M7: pinning service for the Boost / Unlimited tiers (research 2026-11-01, see §5)
+### M7: pinning service for the Boost / Unlimited tiers (research 2026-11-01, see §5) — **parked by the operator 2026-11-02** until seapin is in production
 - [ ] Operator decisions P1–P8 (§5 Open decisions).
 - [ ] Portal: `features.ipfsPinning`, `limits.pinBytes` / `limits.pinCount` in `TIER_FEATURES` / `TIER_LIMITS`, the
       edge-config feed gains them (add fields, never rename), a pin page per endpoint (list, add by CID, upload,
@@ -810,7 +811,7 @@ Still open (recommendation first):
 
 | # | decision | recommendation | why |
 |---|---|---|---|
-| D6 | Region steering | **operator 2026-11-02: Bunny stays in front** (customers use Bunny's image resizing); steering is done at Bunny's origin level (EU and US seapin faces as origins, health-based failover), to be worked out | no Cloudflare LB in front of the gateway |
+| D6 | Region steering | **operator 2026-11-02: Bunny stays in front** (customers use Bunny's image resizing); **geo by Bunny edge rules** (operator 2026-11-02): American traffic to the US face, the rest to the EU face; details from the current pull zone config | no Cloudflare LB in front of the gateway |
 | D8 | "Upload date" | block time of the first referencing txn (`first_seen_at`), plus `cached_at` | the chain time is what "uploaded" means for an ASA |
 
 ## 5. Pinning service (research, 2026-11-01)
