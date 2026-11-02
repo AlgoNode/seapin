@@ -243,3 +243,48 @@ func TestBackfillMemoryBudget(t *testing.T) {
 		}
 	}
 }
+
+// TestReresolve publishes refs for live assets whose URL the current parser
+// resolves and that never produced one, once.
+func TestReresolve(t *testing.T) {
+	s := openScanner(t)
+	fa := &fakeAlgod{fetched: map[uint64]int{}, empty: true}
+	fa.tip.Store(100)
+	srv := httptest.NewServer(fa)
+	defer srv.Close()
+	c, err := algod.MakeClient(srv.URL, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	pub := &memPublisher{}
+	s.Algod, s.Blocks, s.Live, s.Backfill = c, c, &memPublisher{}, pub
+	s.Register(newRegistry())
+	ctx := context.Background()
+	for _, row := range []struct {
+		asset     int64
+		url       string
+		destroyed bool
+		refRound  any
+	}{
+		{1, "gateway.pinata.cloud/ipfs/" + rawCID, false, nil}, // scheme-less: resolved now
+		{2, "https://example.com/1.json", false, nil},          // not IPFS
+		{3, "gateway.pinata.cloud/ipfs/" + rawCID, true, nil},  // destroyed
+		{4, "ipfs://" + rawCID, false, int64(50)},              // has refs already
+	} {
+		if _, err := s.DB.Exec(ctx, `INSERT INTO scan_assets (chain, asset, newest_seq, destroyed, url, creator, ref_round)
+			VALUES ('mainnet-v1.0', $1, $2, $3, $4, 'C', $5)`, row.asset, int64(42)<<20, row.destroyed, row.url, row.refRound); err != nil {
+			t.Fatal(err)
+		}
+	}
+	st, err := s.Reresolve(ctx, false)
+	if err != nil || st.Scanned != 2 || st.Resolved != 1 || st.Published != 1 {
+		t.Fatalf("first pass: %+v %v", st, err)
+	}
+	r := pub.refs[0]
+	if r.Asset != 1 || r.Path != contract.PathURL || r.CID != rawCID || r.Round != 42 || r.Src != contract.SrcBackfill || r.BlockTime.Unix() != 1_700_000_000 {
+		t.Fatalf("ref: %+v", r)
+	}
+	if st, err := s.Reresolve(ctx, false); err != nil || st.Published != 0 || st.Scanned != 1 {
+		t.Fatalf("second pass must publish nothing: %+v %v", st, err)
+	}
+}

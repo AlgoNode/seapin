@@ -39,6 +39,11 @@ func TestParseIPFS(t *testing.T) {
 		"https://ipfs.io/ipfs/" + v1 + "/a/b.png":           {v1, "a/b.png"},
 		"https://" + v1 + ".ipfs.dweb.link/1.json":          {v1, "1.json"},
 		"http://" + strings.ToUpper(raw) + ".ipfs.w3s.link": {raw, ""},
+		// mainnet URLs the scanner missed (M6 coverage check, 2026-11-02)
+		"gateway.pinata.cloud/ipfs/" + v0:         {norm(t, v0), ""},
+		"ipfs.algopoap.xyz/ipfs/" + v1 + "/a.png": {v1, "a.png"},
+		"https://gateway.ipfs.io/ipfs/" + v0:      {norm(t, v0), ""},
+		"/ipfs/" + v0:                             {norm(t, v0), ""},
 	}
 	for in, want := range cases {
 		got, ok := ParseIPFS(in)
@@ -50,6 +55,7 @@ func TestParseIPFS(t *testing.T) {
 		"", v0, "https://example.com/image.png", "ar://abc", "ipfs://", "ipfs://not-a-cid",
 		"ipfs://" + raw + "/../x", "javascript:alert(1)", "data:image/png;base64,AAAA",
 		"https://example.com/ipfs/not-a-cid", "ipfs://" + strings.Repeat("a", 3000),
+		"example.com/image.png", "gateway.ipfs.io/notipfs/" + v0, "ftp://gw.io/ipfs/" + v0, "/ipfs/not-a-cid",
 	} {
 		if got, ok := ParseIPFS(in); ok {
 			t.Errorf("ParseIPFS(%q) = %+v, want no reference", in, got)

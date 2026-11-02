@@ -37,13 +37,17 @@ func main() {
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
-	if err := run(ctx, log); err != nil {
+	mode := ""
+	if len(os.Args) > 1 {
+		mode = os.Args[1] // "reresolve" [-dry-run]: apply the current URL parser to assets without refs, then exit
+	}
+	if err := run(ctx, log, mode, len(os.Args) > 2 && os.Args[2] == "-dry-run"); err != nil {
 		log.Error("seapin-scan failed", "err", err)
 		os.Exit(1)
 	}
 }
 
-func run(ctx context.Context, log *slog.Logger) error {
+func run(ctx context.Context, log *slog.Logger, mode string, dryRun bool) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	cfg, err := config.LoadScan()
@@ -80,6 +84,15 @@ func run(ctx context.Context, log *slog.Logger) error {
 	reg := prometheus.NewRegistry()
 	reg.MustRegister(collectors.NewGoCollector(), collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}))
 	s.Register(reg)
+	switch mode {
+	case "":
+	case "reresolve":
+		st, err := s.Reresolve(ctx, dryRun)
+		log.Info("reresolve done", "scanned", st.Scanned, "resolved", st.Resolved, "published", st.Published, "dry_run", dryRun)
+		return err
+	default:
+		return fmt.Errorf("unknown mode %q (want: version | reresolve [-dry-run])", mode)
+	}
 
 	var wg sync.WaitGroup
 	if cfg.MetaDSN != "" {

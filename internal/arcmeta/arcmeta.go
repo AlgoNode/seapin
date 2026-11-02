@@ -46,19 +46,28 @@ func ParseIPFS(s string) (Ref, bool) {
 	var rest string
 	if p, ok := cutPrefixFold(s, "ipfs://"); ok {
 		rest, _ = cutPrefixFold(p, "ipfs/")
+	} else if p, ok := strings.CutPrefix(s, "/ipfs/"); ok {
+		rest = p // a gateway path without a host
 	} else {
+		if !strings.Contains(s, "://") {
+			s = "https://" + s // "gateway.pinata.cloud/ipfs/<cid>": a gateway URL without its scheme
+		}
 		u, err := url.Parse(s)
 		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
 			return Ref{}, false
 		}
 		host := strings.ToLower(u.Hostname())
+		// <cid>.ipfs.<gateway>; a host that merely contains ".ipfs." (gateway.ipfs.io) falls through to its path
 		if i := strings.Index(host, ".ipfs."); i > 0 {
-			rest = host[:i] + u.Path
-		} else if p, ok := strings.CutPrefix(u.Path, "/ipfs/"); ok {
-			rest = p
-		} else {
+			if r, ok := newRef(host[:i] + u.Path); ok {
+				return r, true
+			}
+		}
+		p, ok := strings.CutPrefix(u.Path, "/ipfs/")
+		if !ok {
 			return Ref{}, false
 		}
+		rest = p
 	}
 	return newRef(rest)
 }
