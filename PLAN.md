@@ -748,6 +748,11 @@ Exit: the catalog diff between regions stays under 0.1% of CIDs 24 h after the d
         - refused for size (> 256 MiB, D3): 38 objects, 42.3 GB in each region (39 by 2026-11-02 ~10:00 UTC; mostly
           art videos of single ASAs, two zip archives linked from EPOCH edition metadata, largest 4.49 GiB).
           **Operator 2026-11-02: keep the 256 MiB cap.**
+      - **Coverage rerun 2026-11-02 ~16:00 UTC — gate passed:** after the pre-16.69 M rescan, the parser fix +
+        reresolve and the destroyed-asset import: all x_asset_meta objects cached EU 98.57% / US 97.69%; **live-asset
+        objects 99.46% in both regions** (superseded versions and policy refusals out of the denominator; 8,911
+        retries pending, 9 with no ref). Destroyed-asset content still filling (EU 33 k, US 69 k pending).
+        Retirement waits for the retry ladder (last retries ~2026-11-09) while the legacy caches still answer them.
 - [ ] At promotion: re-enable the disk-forecast triggers quieted for pre-production
       (`algoup tools/zabbix/zbx_seapin_preprod.py --off`, 2026-11-02).
 - [x] Disk: no resize needed (operator 2026-11-02). New chain content is ~1,000 objects / ~60 MB a day (assets
@@ -1005,3 +1010,8 @@ Postgres + pgvector (HNSW).
 5. **Pinned content excluded:** pin-only content never enters the cache, so it is excluded by construction; content
    that is both pinned and chain-referenced needs the M7 pin catalog's CID list (or a `pinned` flag on the feed) so the
    worker skips or deletes those vectors.
+
+**Decided (operator, 2026-11-02):** pgvector on ai1; 1024 dimensions (halfvec, HNSW); images that are both pinned and
+chain-referenced **stay** searchable (only pin-only content is out, by construction, so the M7 pin list is not needed
+here); the code goes into a **new repo `nft-vectors`** (registered in `_registry`), deployed to ai1 as
+`/home/docker/nft-vectors`. seapin only gains the feed changes (items 1, 2 and 4 above).
