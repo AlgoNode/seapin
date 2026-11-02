@@ -750,6 +750,8 @@ Exit: the catalog diff between regions stays under 0.1% of CIDs 24 h after the d
           **Operator 2026-11-02: keep the 256 MiB cap.**
 - [ ] At promotion: re-enable the disk-forecast triggers quieted for pre-production
       (`algoup tools/zabbix/zbx_seapin_preprod.py --off`, 2026-11-02).
+- [x] Disk: no resize needed (operator 2026-11-02). New chain content is ~1,000 objects / ~60 MB a day (assets
+      configured in the last 24 h); both volumes end near 61% after the destroyed-asset import, 70% is years away.
 - [ ] Pinata review (D7): keep it only if it delivered objects the IPFS network couldn't.
 - [x] Runbook for going past 8 TB written down (a second volume as an extra `-dir`, or a second volume server):
       algoup `deploy/seapin/README.md`, "Disk: growing the volume, and past 8 TB" (2026-11-02; the two-`-dir` setup
@@ -803,7 +805,7 @@ Still open (recommendation first):
 
 | # | decision | recommendation | why |
 |---|---|---|---|
-| D6 | Region steering | Cloudflare Load Balancer geo steering + `/health` monitors | failover without DNS TTL waits; check how it fits behind the current CDN (Bunny, see the `/bunny` check and `-nobunny` hosts) |
+| D6 | Region steering | **operator 2026-11-02: Bunny stays in front** (customers use Bunny's image resizing); steering is done at Bunny's origin level (EU and US seapin faces as origins, health-based failover), to be worked out | no Cloudflare LB in front of the gateway |
 | D8 | "Upload date" | block time of the first referencing txn (`first_seen_at`), plus `cached_at` | the chain time is what "uploaded" means for an ASA |
 
 ## 5. Pinning service (research, 2026-11-01)
@@ -959,7 +961,7 @@ and abuse contact details in the portal terms.
 | P2 | Replication | both regions pin everything (fanout + peering + daily anti-entropy) | 1+1 with no cluster consensus; same pattern as the cache |
 | P3 | Where pin nodes run | **decided 2026-11-01: htz-hel-ipfs-1 and htz-hel-ipfs-2, a fresh kubo after M6** | 32 cores, 125 GB, 7 TB NVMe each, VLAN between them; both in Helsinki (no site redundancy) |
 | P4 | Quotas per tier | Boost: small (e.g. 5 GB / 1,000 pins), Unlimited: large with fair use; upload cap per request | pricing is the operator's; quotas go into `TIER_LIMITS` |
-| P5 | Content policy for pins | any type stored and provided; gateway serves the D3 allowlist with CSP sandbox; takedown on both | pins are customer data; our gateway keeps its policy |
+| P5 | Content policy for pins | **decided 2026-11-02: allowlist only** (the D3 types; anything else refused at pin time) | the same policy as the cache, in the API, the gateway and the pin nodes |
 | P6 | Provide strategy | `pinned+entities` with the sweep provider | ~1 record per file instead of per 256 KiB chunk |
 | P7 | Pin/cache overlap | A (keep the copy), measure, revisit B if overlap > ~20% of pinned bytes | keeps the free cache independent of paid lifecycle |
-| P8 | Boost and the gateway | pins of Boost endpoints served through the gateway only for their own verified sites and token | Boost has no `ipfsGateway` today; pins without a way to read them back over HTTP would be odd |
+| P8 (open: operator asks to define the pinning service's shape first) | Boost and the gateway | pins of Boost endpoints served through the gateway only for their own verified sites and token | Boost has no `ipfsGateway` today; pins without a way to read them back over HTTP would be odd |
