@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"seapin/internal/catalog"
@@ -30,8 +31,13 @@ func (h *Handler) InternalRoutes(token string) http.Handler {
 		mux.HandleFunc("GET /internal/catalog/{kind}", h.catalogPage)
 	}
 	want := []byte("Bearer " + token)
+	read := []byte("Bearer " + h.ReadToken)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if subtle.ConstantTimeCompare([]byte(r.Header.Get("Authorization")), want) != 1 {
+		auth := []byte(r.Header.Get("Authorization"))
+		switch {
+		case subtle.ConstantTimeCompare(auth, want) == 1:
+		case h.ReadToken != "" && subtle.ConstantTimeCompare(auth, read) == 1 && readOnlyPath(r.URL.Path):
+		default:
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
@@ -168,7 +174,7 @@ func (h *Handler) catalogPage(w http.ResponseWriter, r *http.Request) {
 	case "refs":
 		out, err = h.Sync.RefsPage(r.Context(), since, q.Get("after"), limit)
 	case "objects":
-		out, err = h.Sync.ObjectsPage(r.Context(), since, q.Get("after"), limit)
+		out, err = h.Sync.ObjectsPage(r.Context(), since, q.Get("after"), limit, q.Get("mime_prefix"))
 	case "aliases":
 		out, err = h.Sync.AliasesPage(r.Context(), q.Get("after"), q.Get("after_subpath"), limit)
 	case "takedowns":
@@ -185,4 +191,12 @@ func (h *Handler) catalogPage(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Cache-Control", "no-store")
 	json.NewEncoder(w).Encode(out)
+}
+
+// readOnlyPath is what the read token may reach: objects, CID -> assets, the
+// objects page and takedowns; not refs, aliases or asset internals.
+func readOnlyPath(p string) bool {
+	return strings.HasPrefix(p, "/internal/ipfs/") ||
+		(strings.HasPrefix(p, "/internal/cids/") && strings.HasSuffix(p, "/assets")) ||
+		p == "/internal/catalog/objects" || p == "/internal/catalog/takedowns"
 }

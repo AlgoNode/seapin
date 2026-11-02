@@ -463,3 +463,52 @@ func waitFor(t *testing.T, ok func() bool) {
 	}
 	t.Fatal("condition not reached")
 }
+
+// TestInternalReadToken: the read token reaches objects, CID -> assets, the
+// objects page and takedowns, nothing else; the full token reaches all.
+func TestInternalReadToken(t *testing.T) {
+	f := newFixture(t)
+	id, _ := rawCID(t, "read token")
+	f.put(id, png, "image/png")
+	f.cat.objs[id] = catalog.Object{CID: id, Status: catalog.StatusCached, Mime: "image/png", Size: int64(len(png))}
+	full, read := strings.Repeat("f", 32), strings.Repeat("r", 32)
+	h := New(Options{Store: f.st, Catalog: f.cat, Sync: fakeSync{}, Takedowns: f.td, Log: slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Registry: prometheus.NewRegistry(), ReadToken: read}).InternalRoutes(full)
+	call := func(path, tok string) int {
+		req := httptest.NewRequest("GET", path, nil)
+		req.Header.Set("Authorization", "Bearer "+tok)
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		return rec.Code
+	}
+	for path, want := range map[string]int{
+		"/internal/ipfs/" + id: 200, "/internal/cids/" + id + "/assets": 200,
+		"/internal/catalog/objects?mime_prefix=image/": 200, "/internal/catalog/takedowns": 200,
+		"/internal/catalog/refs": 401, "/internal/catalog/aliases": 401, "/internal/assets/mainnet-v1.0/1": 401,
+	} {
+		if got := call(path, read); got != want {
+			t.Errorf("read token %s: %d, want %d", path, got, want)
+		}
+		if got := call(path, full); got == 401 {
+			t.Errorf("full token %s: 401", path)
+		}
+	}
+	if call("/internal/ipfs/"+id, "wrong-wrong-wrong-wrong-wrong-wrong") != 401 {
+		t.Error("a wrong token got in")
+	}
+}
+
+type fakeSync struct{}
+
+func (fakeSync) RefsPage(context.Context, time.Time, string, int) ([]catalog.SyncRef, error) {
+	return nil, nil
+}
+func (fakeSync) ObjectsPage(context.Context, time.Time, string, int, string) ([]catalog.SyncObject, error) {
+	return nil, nil
+}
+func (fakeSync) AliasesPage(context.Context, string, string, int) ([]catalog.SyncAlias, error) {
+	return nil, nil
+}
+func (fakeSync) TakedownList(context.Context) (map[string]string, error) {
+	return map[string]string{}, nil
+}

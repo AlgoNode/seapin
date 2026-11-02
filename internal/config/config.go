@@ -26,10 +26,11 @@ type Config struct {
 	TakedownRefresh time.Duration
 	// The internal listener (other region's fetches, the scanner's asset
 	// reads) is off unless INTERNAL_ADDR is set; it then needs INTERNAL_TOKEN.
-	InternalAddr  string
-	InternalToken string
-	PeerURL       string // serve: the other region's internal listener, for misses during replication lag
-	PeerToken     string
+	InternalAddr      string
+	InternalToken     string
+	PeerURL           string // serve: the other region's internal listener, for misses during replication lag
+	PeerToken         string
+	InternalReadToken string // read-only part of the internal listener (nft-vectors)
 	// Read-through (D2): openresty sets DemandHeader to "1" on requests whose
 	// referer is whitelisted; a miss on those queues a fetch and waits for it.
 	DemandHeader     string
@@ -180,6 +181,10 @@ func Load() (Config, error) {
 	}
 	c.InternalAddr, c.InternalToken = os.Getenv("INTERNAL_ADDR"), os.Getenv("INTERNAL_TOKEN")
 	c.PeerURL, c.PeerToken = os.Getenv("PEER_URL"), os.Getenv("PEER_TOKEN")
+	c.InternalReadToken = os.Getenv("INTERNAL_READ_TOKEN")
+	if c.InternalReadToken != "" && len(c.InternalReadToken) < 32 {
+		return c, fmt.Errorf("INTERNAL_READ_TOKEN must be at least 32 characters")
+	}
 	c.DemandHeader = envOr("DEMAND_HEADER", "X-Seapin-Whitelisted")
 	p := parser{}
 	c.DemandWait = p.dur("DEMAND_WAIT", 20*time.Second)

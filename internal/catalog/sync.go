@@ -21,6 +21,8 @@ type SyncObject struct {
 	CID       string    `json:"cid"`
 	CachedAt  time.Time `json:"cached_at"`
 	FirstSeen time.Time `json:"first_seen_at"`
+	Mime      string    `json:"mime"`
+	Size      int64     `json:"size"`
 }
 
 // SyncAlias is one directory path the peer resolved.
@@ -54,11 +56,13 @@ func (c *Catalog) RefsPage(ctx context.Context, since time.Time, after string, l
 	return out, rows.Err()
 }
 
-// ObjectsPage returns cached objects in (cached_at, cid) order after (since, after).
-func (c *Catalog) ObjectsPage(ctx context.Context, since time.Time, after string, limit int) ([]SyncObject, error) {
+// ObjectsPage returns cached objects in (cached_at, cid) order after (since,
+// after); mimePrefix ("image/") keeps only matching types ("" = all).
+func (c *Catalog) ObjectsPage(ctx context.Context, since time.Time, after string, limit int, mimePrefix string) ([]SyncObject, error) {
 	rows, err := c.pool.Query(ctx, `
-		SELECT cid, cached_at, first_seen_at FROM objects
-		WHERE status = 'cached' AND (cached_at, cid) > ($1, $2) ORDER BY cached_at, cid LIMIT $3`, since, after, limit)
+		SELECT cid, cached_at, first_seen_at, coalesce(mime, ''), coalesce(size, 0) FROM objects
+		WHERE status = 'cached' AND (cached_at, cid) > ($1, $2) AND ($4 = '' OR mime LIKE $4 || '%')
+		ORDER BY cached_at, cid LIMIT $3`, since, after, limit, mimePrefix)
 	if err != nil {
 		return nil, err
 	}
@@ -66,7 +70,7 @@ func (c *Catalog) ObjectsPage(ctx context.Context, since time.Time, after string
 	var out []SyncObject
 	for rows.Next() {
 		var o SyncObject
-		if err := rows.Scan(&o.CID, &o.CachedAt, &o.FirstSeen); err != nil {
+		if err := rows.Scan(&o.CID, &o.CachedAt, &o.FirstSeen, &o.Mime, &o.Size); err != nil {
 			return nil, err
 		}
 		out = append(out, o)

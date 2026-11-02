@@ -54,6 +54,10 @@ type Options struct {
 	// PeerURL is the other region's internal listener: a local miss is
 	// served from its cache when it has the object (PeerToken authorises).
 	PeerURL, PeerToken string
+	// ReadToken opens a read-only part of the internal listener (objects,
+	// CID -> assets, the objects page, takedowns) to other services such as
+	// nft-vectors; "" = off.
+	ReadToken string
 	// Sync serves this region's catalog to the peer's anti-entropy pull
 	// (/internal/catalog/...); nil leaves those endpoints out.
 	Sync SyncSource
@@ -62,7 +66,7 @@ type Options struct {
 // SyncSource is the catalog as the peer's anti-entropy reads it (*catalog.Catalog).
 type SyncSource interface {
 	RefsPage(ctx context.Context, since time.Time, after string, limit int) ([]catalog.SyncRef, error)
-	ObjectsPage(ctx context.Context, since time.Time, after string, limit int) ([]catalog.SyncObject, error)
+	ObjectsPage(ctx context.Context, since time.Time, after string, limit int, mimePrefix string) ([]catalog.SyncObject, error)
 	AliasesPage(ctx context.Context, afterRoot, afterSub string, limit int) ([]catalog.SyncAlias, error)
 	TakedownList(ctx context.Context) (map[string]string, error)
 }
