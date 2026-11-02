@@ -742,8 +742,10 @@ Exit: the catalog diff between regions stays under 0.1% of CIDs 24 h after the d
           - 4,683 objects (5.1 GB) of live assets with no seapin ref (not analysed yet)
         - after the rescan, counting current versions and leaving policy refusals out of the denominator:
           ~1,623.7 k of ~1,637.3 k = **~99.2%** of live-asset objects, i.e. the gate passes for live assets.
-        - open (operator): whether destroyed-asset content is in scope (one-off import of its 2.43 M CIDs vs 404
-          after the cutover for 1.77% of today's successful requests).
+        - **decided (operator, 2026-11-02): destroyed-asset content is in scope, as a one-off import** (the scanner
+          keeps skipping destroyed assets): `seapin import-refs` (`d4ad15b`) publishes the 2,431,245 objects as
+          `import/<class>` refs to both regions; started after the rescan, while the legacy caches still serve them.
+        - refused for size (> 256 MiB, D3): 38 objects, 42.3 GB in each region.
 - [ ] Pinata review (D7): keep it only if it delivered objects the IPFS network couldn't.
 - [ ] Runbook for going past 8 TB written down (a second volume as an extra `-dir`, or a second volume server).
 
