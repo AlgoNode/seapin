@@ -745,7 +745,9 @@ Exit: the catalog diff between regions stays under 0.1% of CIDs 24 h after the d
         - **decided (operator, 2026-11-02): destroyed-asset content is in scope, as a one-off import** (the scanner
           keeps skipping destroyed assets): `seapin import-refs` (`d4ad15b`) publishes the 2,431,245 objects as
           `import/<class>` refs to both regions; started after the rescan, while the legacy caches still serve them.
-        - refused for size (> 256 MiB, D3): 38 objects, 42.3 GB in each region.
+        - refused for size (> 256 MiB, D3): 38 objects, 42.3 GB in each region (39 by 2026-11-02 ~10:00 UTC; mostly
+          art videos of single ASAs, two zip archives linked from EPOCH edition metadata, largest 4.49 GiB).
+          **Operator 2026-11-02: keep the 256 MiB cap.**
 - [ ] Pinata review (D7): keep it only if it delivered objects the IPFS network couldn't.
 - [ ] Runbook for going past 8 TB written down (a second volume as an extra `-dir`, or a second volume server).
 
