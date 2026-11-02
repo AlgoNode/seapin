@@ -72,6 +72,36 @@ func TestEvents(t *testing.T) {
 	}
 }
 
+// TestEventsOldCreateID: before round ~16.69 M blocks do not record a created
+// asset's id; it follows from the block's transaction counter. Mainnet round
+// 14,936,396: TxnCounter 271,852,356, 72 transactions, the creation at index
+// 20 is asset 271,852,305.
+func TestEventsOldCreateID(t *testing.T) {
+	b := types.Block{BlockHeader: types.BlockHeader{Round: 14936396, GenesisID: "mainnet-v1.0"}}
+	b.TxnCounter = 271852356
+	for i := range 72 {
+		s := types.SignedTxnWithAD{}
+		s.Txn.Type = types.PaymentTx
+		if i == 20 {
+			s = acfg(address(1), 0, types.AssetParams{URL: "ipfs://x"}, "")
+		}
+		b.Payset = append(b.Payset, types.SignedTxnInBlock{SignedTxnWithAD: s})
+	}
+	evs := Events(b)
+	if len(evs) != 1 || evs[0].Asset != 271852305 || evs[0].Kind != Create {
+		t.Fatalf("old creation: %+v", evs)
+	}
+	// With inner transactions in the block the counter arithmetic does not hold:
+	// a creation without a recorded id is skipped, as before.
+	app := types.SignedTxnWithAD{}
+	app.Txn.Type = types.ApplicationCallTx
+	app.ApplyData.EvalDelta.InnerTxns = []types.SignedTxnWithAD{{}}
+	b.Payset[0] = types.SignedTxnInBlock{SignedTxnWithAD: app}
+	if evs := Events(b); len(evs) != 0 {
+		t.Fatalf("derived an id in a block with inner transactions: %+v", evs)
+	}
+}
+
 // openScanner returns a scanner on a throwaway schema of SEAPIN_TEST_PG_DSN.
 func openScanner(t *testing.T) *Scanner {
 	t.Helper()

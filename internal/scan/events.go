@@ -40,7 +40,17 @@ func Events(b types.Block) []Event {
 	var out []Event
 	t := time.Unix(b.TimeStamp, 0).UTC()
 	pos := 0
-	for _, st := range b.Payset {
+	// Blocks before the protocol upgrade at round ~16.69 M do not record a
+	// created asset's id in ApplyData. It is then the transaction counter at
+	// that transaction: TxnCounter counts up to the block's last transaction,
+	// one per top-level transaction (those blocks have no inner ones). Without
+	// this, every asset created then and never reconfigured was missed
+	// (M6 coverage check, 2026-11-02: 27.8 k assets).
+	derive := b.TxnCounter >= uint64(len(b.Payset)) && !hasInner(b)
+	for i, st := range b.Payset {
+		if derive && st.Txn.Type == types.AssetConfigTx && st.Txn.ConfigAsset == 0 && st.ApplyData.ConfigAsset == 0 {
+			st.ApplyData.ConfigAsset = types.AssetIndex(b.TxnCounter - uint64(len(b.Payset)) + uint64(i) + 1)
+		}
 		txid := ""
 		if st.Txn.Type == types.AssetConfigTx {
 			txn := st.Txn
@@ -79,4 +89,13 @@ func collect(out *[]Event, s types.SignedTxnWithAD, round uint64, t time.Time, t
 	for _, in := range s.ApplyData.EvalDelta.InnerTxns {
 		collect(out, in, round, t, "", pos)
 	}
+}
+
+func hasInner(b types.Block) bool {
+	for _, st := range b.Payset {
+		if len(st.ApplyData.EvalDelta.InnerTxns) > 0 {
+			return true
+		}
+	}
+	return false
 }
