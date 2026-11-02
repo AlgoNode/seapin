@@ -51,6 +51,9 @@ type Options struct {
 	DemandHeader     string
 	DemandWait       time.Duration
 	DemandMaxWaiters int
+	// PeerURL is the other region's internal listener: a local miss is
+	// served from its cache when it has the object (PeerToken authorises).
+	PeerURL, PeerToken string
 	// Sync serves this region's catalog to the peer's anti-entropy pull
 	// (/internal/catalog/...); nil leaves those endpoints out.
 	Sync SyncSource
@@ -69,11 +72,13 @@ type Handler struct {
 	requests *prometheus.CounterVec
 	bytes    prometheus.Counter
 	waiters  chan struct{}
+	peer     *peer
 }
 
 func New(o Options) *Handler {
 	h := &Handler{
 		Options: o,
+		peer:    newPeer(o.PeerURL, o.PeerToken),
 		requests: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "seapin_serve_requests_total",
 			Help: "Gateway requests by outcome.",
@@ -105,6 +110,7 @@ func (h *Handler) Routes() http.Handler {
 const (
 	outcomeHit           = "hit"
 	outcomeMiss          = "miss"
+	outcomePeer          = "peer" // served from the other region during replication lag
 	outcomeBlocked       = "blocked"
 	outcomeTakedown      = "takedown"
 	outcomeInvalid       = "invalid"
@@ -222,6 +228,9 @@ func (h *Handler) blocked(w http.ResponseWriter, r *http.Request, leaf string) b
 // notCached answers for content the bucket does not have: read-through for
 // whitelisted referers, otherwise a 404 the CDN may only keep briefly.
 func (h *Handler) notCached(w http.ResponseWriter, r *http.Request, root, sub string) string {
+	if h.fromPeer(w, r, root, sub) {
+		return outcomePeer
+	}
 	if h.DemandHeader != "" && r.Header.Get(h.DemandHeader) == "1" {
 		return h.demand(w, r, root, sub)
 	}

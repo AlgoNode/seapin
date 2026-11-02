@@ -12,6 +12,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -395,4 +396,70 @@ func TestInternalCIDAssets(t *testing.T) {
 	if rec := call("/internal/cids/"+v0+"/assets", true); strings.Contains(rec.Body.String(), `"truncated":true`) {
 		t.Fatalf("default limit truncated 3 assets: %s", rec.Body)
 	}
+}
+
+// TestPeerProxy: a local miss is served from the peer region when the peer has
+// the object (Range passed through) and a local copy is queued; a peer miss is
+// answered locally and remembered; a peer's own request is never proxied on.
+func TestPeerProxy(t *testing.T) {
+	tok := strings.Repeat("p", 32)
+	remote := newFixture(t)
+	id, _ := rawCID(t, "on the peer only")
+	remote.put(id, png, "image/png")
+	remote.cat.objs[id] = catalog.Object{CID: id, Status: catalog.StatusCached, Mime: "image/png", Size: int64(len(png))}
+	var peerHits atomic.Int32
+	inner := New(Options{Store: remote.st, Catalog: remote.cat, Takedowns: remote.td,
+		Log: slog.New(slog.NewTextHandler(io.Discard, nil)), Registry: prometheus.NewRegistry(), MissMaxAge: time.Minute}).InternalRoutes(tok)
+	peerSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		peerHits.Add(1)
+		inner.ServeHTTP(w, r)
+	}))
+	defer peerSrv.Close()
+
+	local := newFixture(t)
+	local.h = New(Options{Store: local.st, Catalog: local.cat, Takedowns: local.td,
+		Log: slog.New(slog.NewTextHandler(io.Discard, nil)), Registry: prometheus.NewRegistry(), MissMaxAge: time.Minute,
+		PeerURL: peerSrv.URL, PeerToken: tok}).Routes()
+
+	rec := local.do("GET", "/ipfs/"+id)
+	if rec.Code != 200 || !bytes.Equal(rec.Body.Bytes(), png) || rec.Header().Get("Content-Type") != "image/png" {
+		t.Fatalf("peer hit: %d %q", rec.Code, rec.Header())
+	}
+	rec = local.do("GET", "/ipfs/"+id, "Range", "bytes=0-7")
+	if rec.Code != 206 || rec.Body.Len() != 8 {
+		t.Fatalf("range through the peer: %d len %d", rec.Code, rec.Body.Len())
+	}
+	waitFor(t, func() bool {
+		local.cat.mu.Lock()
+		defer local.cat.mu.Unlock()
+		return len(local.cat.demanded) > 0 && local.cat.demanded[0] == id+"/@peer"
+	})
+
+	missing, _ := rawCID(t, "nowhere")
+	before := peerHits.Load()
+	for range 3 {
+		if rec := local.do("GET", "/ipfs/"+missing); rec.Code != 404 {
+			t.Fatalf("peer miss: %d", rec.Code)
+		}
+	}
+	if n := peerHits.Load() - before; n != 1 {
+		t.Fatalf("a peer miss must be remembered: asked the peer %d times", n)
+	}
+
+	before = peerHits.Load()
+	other, _ := rawCID(t, "also nowhere")
+	if rec := local.do("GET", "/ipfs/"+other, peerHeader, "1"); rec.Code != 404 || peerHits.Load() != before {
+		t.Fatalf("a peer's request was proxied on: %d", rec.Code)
+	}
+}
+
+func waitFor(t *testing.T, ok func() bool) {
+	t.Helper()
+	for range 100 {
+		if ok() {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatal("condition not reached")
 }

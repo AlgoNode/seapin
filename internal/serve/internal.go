@@ -35,6 +35,7 @@ func (h *Handler) InternalRoutes(token string) http.Handler {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
+		r.Header.Set(peerHeader, "1") // never proxy a peer's request on to the peer
 		mux.ServeHTTP(w, r)
 	})
 }

@@ -101,6 +101,8 @@ func runServe(ctx context.Context, log *slog.Logger) error {
 		Log:        log,
 		Registry:   reg,
 		MissMaxAge: cfg.MissMaxAge,
+		PeerURL:    cfg.PeerURL,
+		PeerToken:  cfg.PeerToken,
 
 		DemandHeader:     cfg.DemandHeader,
 		DemandWait:       cfg.DemandWait,
