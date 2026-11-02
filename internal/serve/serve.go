@@ -32,6 +32,7 @@ type Catalog interface {
 	Lookup(ctx context.Context, cid string) (catalog.Object, bool, error)
 	ResolveAlias(ctx context.Context, root, subpath string) (string, bool, error)
 	AssetObjects(ctx context.Context, chain string, asset uint64) ([]catalog.AssetObject, error)
+	CIDAssets(ctx context.Context, chain, cid string, limit int) ([]catalog.CIDAsset, error)
 	FetchState(ctx context.Context, root, subpath string) (catalog.FetchState, error)
 	Demand(ctx context.Context, root, subpath, site string) error
 	Ping(ctx context.Context) error

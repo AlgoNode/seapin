@@ -3,7 +3,9 @@ package serve
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -57,14 +59,15 @@ func (f *fakeStore) GetRange(_ context.Context, key string, off int64) (io.ReadC
 func (f *fakeStore) Ping(context.Context) error { return nil }
 
 type fakeCatalog struct {
-	mu       sync.Mutex
-	objs     map[string]catalog.Object
-	aliases  map[string]string // root + "/" + subpath -> leaf
-	assets   []catalog.AssetObject
-	fetches  map[string]catalog.FetchState // root + "/" + subpath
-	demanded []string                      // root/subpath@site
-	onDemand func(root, sub string)        // plays ingest
-	err      error
+	mu        sync.Mutex
+	objs      map[string]catalog.Object
+	aliases   map[string]string // root + "/" + subpath -> leaf
+	assets    []catalog.AssetObject
+	cidAssets []catalog.CIDAsset
+	fetches   map[string]catalog.FetchState // root + "/" + subpath
+	demanded  []string                      // root/subpath@site
+	onDemand  func(root, sub string)        // plays ingest
+	err       error
 }
 
 func (f *fakeCatalog) FetchState(_ context.Context, root, sub string) (catalog.FetchState, error) {
@@ -109,6 +112,13 @@ func (f *fakeCatalog) Ping(context.Context) error { return f.err }
 
 func (f *fakeCatalog) AssetObjects(context.Context, string, uint64) ([]catalog.AssetObject, error) {
 	return f.assets, f.err
+}
+
+func (f *fakeCatalog) CIDAssets(_ context.Context, _, _ string, limit int) ([]catalog.CIDAsset, error) {
+	if f.err != nil {
+		return nil, f.err
+	}
+	return f.cidAssets[:min(limit, len(f.cidAssets))], nil
 }
 
 func rawCID(t *testing.T, data string) (v1 string, v0 string) {
@@ -344,5 +354,45 @@ func TestHealth(t *testing.T) {
 	rec := f.do("GET", "/health")
 	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "down") {
 		t.Errorf("postgres down should stay 200 and say so: %d %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestInternalCIDAssets(t *testing.T) {
+	f := newFixture(t)
+	for i := range 3 {
+		f.cat.cidAssets = append(f.cat.cidAssets, catalog.CIDAsset{Asset: uint64(10 + i), Key: fmt.Sprintf("mainnet-v1.0/%d/url", 10+i)})
+	}
+	h := New(Options{Store: f.st, Catalog: f.cat, Takedowns: f.td, Log: slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Registry: prometheus.NewRegistry()}).InternalRoutes(strings.Repeat("t", 32))
+	_, v0 := rawCID(t, "a")
+	call := func(path string, auth bool) *httptest.ResponseRecorder {
+		req := httptest.NewRequest("GET", path, nil)
+		if auth {
+			req.Header.Set("Authorization", "Bearer "+strings.Repeat("t", 32))
+		}
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		return rec
+	}
+	if rec := call("/internal/cids/"+v0+"/assets", false); rec.Code != http.StatusUnauthorized {
+		t.Fatalf("no token: %d", rec.Code)
+	}
+	if rec := call("/internal/cids/notacid/assets", true); rec.Code != http.StatusBadRequest {
+		t.Fatalf("bad cid: %d", rec.Code)
+	}
+	rec := call("/internal/cids/"+v0+"/assets?limit=2", true)
+	var out struct {
+		CID       string
+		Assets    []catalog.CIDAsset
+		Truncated bool
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil || rec.Code != 200 {
+		t.Fatalf("%d %s %v", rec.Code, rec.Body, err)
+	}
+	if !strings.HasPrefix(out.CID, "baf") || len(out.Assets) != 2 || !out.Truncated || out.Assets[1].Asset != 11 {
+		t.Fatalf("got %+v (CIDv0 must come back normalised, 2 of 3, truncated)", out)
+	}
+	if rec := call("/internal/cids/"+v0+"/assets", true); strings.Contains(rec.Body.String(), `"truncated":true`) {
+		t.Fatalf("default limit truncated 3 assets: %s", rec.Body)
 	}
 }

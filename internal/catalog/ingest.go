@@ -350,6 +350,31 @@ type AssetObject struct {
 	Size                     int64
 }
 
+// CIDAsset is one asset that reaches a CID: directly (depth 0) or through
+// JSON links; Key is the path asset_objects gives the object.
+type CIDAsset struct {
+	Asset uint64 `json:"asset"`
+	Key   string `json:"key"`
+	Depth int    `json:"depth"`
+}
+
+// CIDAssets returns up to limit assets that reference cid (cid_assets).
+func (c *Catalog) CIDAssets(ctx context.Context, chain, cid string, limit int) ([]CIDAsset, error) {
+	rows, err := c.pool.Query(ctx, `SELECT asset, key, depth FROM cid_assets($1, $2, $3)`, chain, cid, limit)
+	if err != nil {
+		return nil, err
+	}
+	var out []CIDAsset
+	var a CIDAsset
+	var asset int64
+	_, err = pgx.ForEachRow(rows, []any{&asset, &a.Key, &a.Depth}, func() error {
+		a.Asset = uint64(asset)
+		out = append(out, a)
+		return nil
+	})
+	return out, err
+}
+
 func (c *Catalog) AssetObjects(ctx context.Context, chain string, asset uint64) ([]AssetObject, error) {
 	rows, err := c.pool.Query(ctx, `
 		SELECT key, root_cid, subpath, COALESCE(leaf_cid, ''), depth,

@@ -108,6 +108,25 @@ func TestIngestQueue(t *testing.T) {
 		t.Fatalf("asset_objects:\n got  %s\n want %s", got, want)
 	}
 
+	// The reverse: from a leaf behind a directory path in the JSON, and from the JSON itself.
+	for cid, want := range map[string]string{
+		"bafk-leaf": "1 mainnet-v1.0/1/url/properties/file_url 1",
+		"bafy-json": "1 mainnet-v1.0/1/url 0",
+		"bafk-none": "",
+	} {
+		as, err := c.CIDAssets(ctx, "mainnet-v1.0", cid, 10)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var got []string
+		for _, a := range as {
+			got = append(got, fmt.Sprintf("%d %s %d", a.Asset, a.Key, a.Depth))
+		}
+		if strings.Join(got, ", ") != want {
+			t.Errorf("cid_assets(%s): got %q, want %q", cid, strings.Join(got, ", "), want)
+		}
+	}
+
 	// A second asset pointing at the cached JSON queues nothing new: the
 	// children are pending or known already.
 	if n, _ := c.ApplyRef(ctx, ref(2, "url", "bafy-json", "", "C", "live", 100)); n != 0 {

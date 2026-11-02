@@ -17,12 +17,14 @@ const maxInlineJSON = 10 << 10
 
 // InternalRoutes is the listener for our own services only (tailnet, bearer
 // token): the other region fetches cached objects through /internal/ipfs/,
-// and the scanner reads what an asset resolved to through /internal/assets/.
+// the scanner reads what an asset resolved to through /internal/assets/, and
+// /internal/cids/{cid}/assets answers the reverse: which assets reach a CID.
 func (h *Handler) InternalRoutes(token string) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /internal/ipfs/{cid}", h.ipfs)
 	mux.HandleFunc("GET /internal/ipfs/{cid}/{path...}", h.ipfs)
 	mux.HandleFunc("GET /internal/assets/{chain}/{asset}", h.asset)
+	mux.HandleFunc("GET /internal/cids/{cid}/assets", h.cidAssets)
 	want := []byte("Bearer " + token)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if subtle.ConstantTimeCompare([]byte(r.Header.Get("Authorization")), want) != 1 {
@@ -90,4 +92,46 @@ func (h *Handler) readJSON(r *http.Request, leaf string) json.RawMessage {
 		return nil
 	}
 	return b
+}
+
+// maxCIDAssets caps /internal/cids/{cid}/assets; a shared default image can be
+// reached by thousands of assets.
+const maxCIDAssets = 1000
+
+func (h *Handler) cidAssets(w http.ResponseWriter, r *http.Request) {
+	id, err := cidkey.Normalize(r.PathValue("cid"))
+	if err != nil {
+		http.Error(w, "invalid CID", http.StatusBadRequest)
+		return
+	}
+	chain := r.URL.Query().Get("chain")
+	if chain == "" {
+		chain = "mainnet-v1.0"
+	}
+	limit := 100
+	if v := r.URL.Query().Get("limit"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			limit = min(n, maxCIDAssets)
+		}
+	}
+	// one more than asked tells whether the list was cut
+	as, err := h.Catalog.CIDAssets(r.Context(), chain, id, limit+1)
+	if err != nil {
+		h.Log.Error("cid assets", "cid", id, "err", err)
+		http.Error(w, "catalog unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	out := struct {
+		CID       string             `json:"cid"`
+		Chain     string             `json:"chain"`
+		Assets    []catalog.CIDAsset `json:"assets"`
+		Truncated bool               `json:"truncated"`
+	}{CID: id, Chain: chain, Assets: []catalog.CIDAsset{}}
+	if len(as) > limit {
+		as, out.Truncated = as[:limit], true
+	}
+	out.Assets = append(out.Assets, as...)
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "no-store")
+	json.NewEncoder(w).Encode(out)
 }
