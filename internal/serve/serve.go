@@ -51,6 +51,17 @@ type Options struct {
 	DemandHeader     string
 	DemandWait       time.Duration
 	DemandMaxWaiters int
+	// Sync serves this region's catalog to the peer's anti-entropy pull
+	// (/internal/catalog/...); nil leaves those endpoints out.
+	Sync SyncSource
+}
+
+// SyncSource is the catalog as the peer's anti-entropy reads it (*catalog.Catalog).
+type SyncSource interface {
+	RefsPage(ctx context.Context, since time.Time, after string, limit int) ([]catalog.SyncRef, error)
+	ObjectsPage(ctx context.Context, since time.Time, after string, limit int) ([]catalog.SyncObject, error)
+	AliasesPage(ctx context.Context, afterRoot, afterSub string, limit int) ([]catalog.SyncAlias, error)
+	TakedownList(ctx context.Context) (map[string]string, error)
 }
 
 type Handler struct {

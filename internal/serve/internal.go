@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"strconv"
+	"time"
 
 	"seapin/internal/catalog"
 	"seapin/internal/cidkey"
@@ -25,6 +26,9 @@ func (h *Handler) InternalRoutes(token string) http.Handler {
 	mux.HandleFunc("GET /internal/ipfs/{cid}/{path...}", h.ipfs)
 	mux.HandleFunc("GET /internal/assets/{chain}/{asset}", h.asset)
 	mux.HandleFunc("GET /internal/cids/{cid}/assets", h.cidAssets)
+	if h.Sync != nil {
+		mux.HandleFunc("GET /internal/catalog/{kind}", h.catalogPage)
+	}
 	want := []byte("Bearer " + token)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if subtle.ConstantTimeCompare([]byte(r.Header.Get("Authorization")), want) != 1 {
@@ -131,6 +135,52 @@ func (h *Handler) cidAssets(w http.ResponseWriter, r *http.Request) {
 		as, out.Truncated = as[:limit], true
 	}
 	out.Assets = append(out.Assets, as...)
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "no-store")
+	json.NewEncoder(w).Encode(out)
+}
+
+// maxSyncPage caps one anti-entropy page.
+const maxSyncPage = 5000
+
+// catalogPage serves one page of this region's catalog to the peer's
+// anti-entropy pull: refs and objects since a time (RFC 3339, nanoseconds)
+// after a key, aliases after a (root, subpath) pair, or every takedown.
+func (h *Handler) catalogPage(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	limit := 1000
+	if n, err := strconv.Atoi(q.Get("limit")); err == nil && n > 0 {
+		limit = min(n, maxSyncPage)
+	}
+	since := time.Unix(0, 0).UTC()
+	if v := q.Get("since"); v != "" {
+		t, err := time.Parse(time.RFC3339Nano, v)
+		if err != nil {
+			http.Error(w, "since: RFC 3339", http.StatusBadRequest)
+			return
+		}
+		since = t
+	}
+	var out any
+	var err error
+	switch r.PathValue("kind") {
+	case "refs":
+		out, err = h.Sync.RefsPage(r.Context(), since, q.Get("after"), limit)
+	case "objects":
+		out, err = h.Sync.ObjectsPage(r.Context(), since, q.Get("after"), limit)
+	case "aliases":
+		out, err = h.Sync.AliasesPage(r.Context(), q.Get("after"), q.Get("after_subpath"), limit)
+	case "takedowns":
+		out, err = h.Sync.TakedownList(r.Context())
+	default:
+		http.NotFound(w, r)
+		return
+	}
+	if err != nil {
+		h.Log.Error("catalog page", "kind", r.PathValue("kind"), "err", err)
+		http.Error(w, "catalog unavailable", http.StatusServiceUnavailable)
+		return
+	}
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Cache-Control", "no-store")
 	json.NewEncoder(w).Encode(out)

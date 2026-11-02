@@ -128,6 +128,14 @@ func runIngest(ctx context.Context, log *slog.Logger) error {
 
 	log.Info("ingesting", "region", ing.Region, "sources", len(sources), "addr", ing.Addr, "version", version)
 	var wg sync.WaitGroup
+	if ing.PeerURL != "" && ing.SyncInterval > 0 {
+		syncer := &ingest.Syncer{
+			PeerURL: ing.PeerURL, Token: ing.PeerToken, Client: &http.Client{Timeout: 5 * time.Minute},
+			Catalog: cat, Interval: ing.SyncInterval, Overlap: time.Hour, Page: ing.SyncPage, Log: log,
+		}
+		syncer.Register(reg)
+		wg.Go(func() { syncer.Run(ctx) })
+	}
 	wg.Go(func() { sched.Run(ctx) })
 	wg.Go(func() { intake.Run(ctx) })
 	wg.Go(func() { // serve's read-through queues fetches and NOTIFYs; wake the lane at once

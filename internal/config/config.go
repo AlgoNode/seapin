@@ -37,19 +37,21 @@ type Config struct {
 
 // Ingest holds what `seapin ingest` needs on top of Config.
 type Ingest struct {
-	Region      string // eu | us; the queue is seapin.<region>
-	RMQURL      string
-	QueueType   string // "" (classic) or "quorum"
-	QueueMaxLen int64
-	Prefetch    int
-	Addr        string // /health and /metrics
-	SidecarURL  string // IPFS gateway sidecar (rainbow, D1)
-	LegacyURL   string // old gateway caches, comma-separated, only-if-cached; migration only (M4–M6)
-	PeerURL     string // the other region's internal listener; optional
-	PeerFirst   bool   // ask the peer before the legacy caches (default true)
-	PeerToken   string
-	PinataURL   string // optional last source, slow lanes only
-	PinataToken string
+	Region       string // eu | us; the queue is seapin.<region>
+	RMQURL       string
+	QueueType    string // "" (classic) or "quorum"
+	QueueMaxLen  int64
+	Prefetch     int
+	Addr         string        // /health and /metrics
+	SidecarURL   string        // IPFS gateway sidecar (rainbow, D1)
+	LegacyURL    string        // old gateway caches, comma-separated, only-if-cached; migration only (M4–M6)
+	PeerURL      string        // the other region's internal listener; optional
+	PeerFirst    bool          // ask the peer before the legacy caches (default true)
+	SyncInterval time.Duration // anti-entropy pull from the peer (default 24h; 0 = off)
+	SyncPage     int
+	PeerToken    string
+	PinataURL    string // optional last source, slow lanes only
+	PinataToken  string
 
 	FastSlots, SlowSlots, BackfillSlots, DemandSlots        int
 	FastTTFB, SlowTTFB, BackfillTTFB, RetryTTFB, DemandTTFB time.Duration
@@ -63,19 +65,21 @@ func LoadIngest() (Config, Ingest, error) {
 	}
 	p := parser{}
 	in := Ingest{
-		Region:      p.need("REGION"),
-		RMQURL:      p.need("RMQ_URL"),
-		QueueType:   os.Getenv("QUEUE_TYPE"),
-		QueueMaxLen: int64(p.int("QUEUE_MAX_LENGTH", 10_000_000)),
-		Prefetch:    p.int("PREFETCH", 256),
-		Addr:        envOr("INGEST_ADDR", "127.0.0.1:8091"),
-		SidecarURL:  envOr("SIDECAR_URL", "http://127.0.0.1:8090"),
-		LegacyURL:   os.Getenv("LEGACY_URL"),
-		PeerURL:     os.Getenv("PEER_URL"),
-		PeerToken:   os.Getenv("PEER_TOKEN"),
-		PeerFirst:   os.Getenv("PEER_FIRST") != "false",
-		PinataURL:   os.Getenv("PINATA_URL"),
-		PinataToken: os.Getenv("PINATA_TOKEN"),
+		Region:       p.need("REGION"),
+		RMQURL:       p.need("RMQ_URL"),
+		QueueType:    os.Getenv("QUEUE_TYPE"),
+		QueueMaxLen:  int64(p.int("QUEUE_MAX_LENGTH", 10_000_000)),
+		Prefetch:     p.int("PREFETCH", 256),
+		Addr:         envOr("INGEST_ADDR", "127.0.0.1:8091"),
+		SidecarURL:   envOr("SIDECAR_URL", "http://127.0.0.1:8090"),
+		LegacyURL:    os.Getenv("LEGACY_URL"),
+		PeerURL:      os.Getenv("PEER_URL"),
+		PeerToken:    os.Getenv("PEER_TOKEN"),
+		PeerFirst:    os.Getenv("PEER_FIRST") != "false",
+		SyncInterval: p.dur("SYNC_INTERVAL", 24*time.Hour),
+		SyncPage:     p.int("SYNC_PAGE", 2000),
+		PinataURL:    os.Getenv("PINATA_URL"),
+		PinataToken:  os.Getenv("PINATA_TOKEN"),
 
 		FastSlots:     p.int("FAST_SLOTS", 48),
 		SlowSlots:     p.int("SLOW_SLOTS", 16),

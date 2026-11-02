@@ -96,6 +96,7 @@ func runServe(ctx context.Context, log *slog.Logger) error {
 	h := serve.New(serve.Options{
 		Store:      st,
 		Catalog:    cat,
+		Sync:       cat,
 		Takedowns:  td,
 		Log:        log,
 		Registry:   reg,
