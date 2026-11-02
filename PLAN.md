@@ -753,7 +753,7 @@ Exit: the catalog diff between regions stays under 0.1% of CIDs 24 h after the d
 - [ ] Pinata review (D7): keep it only if it delivered objects the IPFS network couldn't.
 - [x] Runbook for going past 8 TB written down (a second volume as an extra `-dir`, or a second volume server):
       algoup `deploy/seapin/README.md`, "Disk: growing the volume, and past 8 TB" (2026-11-02; the two-`-dir` setup
-      still to be tried on the dev stack before it is needed).
+      tested 2026-11-02 with the production SeaweedFS image).
 
 Exit: the old gateway receives no traffic for 2 weeks; fill rate tracked against the 70% grow trigger.
 
