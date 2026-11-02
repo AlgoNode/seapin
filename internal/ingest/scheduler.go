@@ -28,13 +28,18 @@ type Lane struct {
 	Fair        bool          // at most one fetch per creator per claim
 	CreatorCap  int           // most slots one creator may hold; 0 = no cap
 	SlowSources bool          // may use SlowOnly sources (Pinata)
+	// SlowSourcesRetryOnly keeps SlowOnly sources out of a fetch's first
+	// attempt: in the backfill lane most first misses are dead content, and a
+	// second 10 s first-byte wait (rainbow, then Pinata) halved the lane's
+	// throughput (2026-11-02). Retries (120 s deadline) still use them.
+	SlowSourcesRetryOnly bool
 }
 
 func DefaultLanes() []Lane {
 	return []Lane{
 		{Name: catalog.LaneFast, Slots: 48, TTFB: 10 * time.Second, RetryTTFB: 10 * time.Second, Fair: true, CreatorCap: 4},
 		{Name: catalog.LaneSlow, Slots: 16, TTFB: 120 * time.Second, RetryTTFB: 120 * time.Second, Fair: true, CreatorCap: 2, SlowSources: true},
-		{Name: catalog.LaneBackfill, Slots: 32, TTFB: 10 * time.Second, RetryTTFB: 120 * time.Second, SlowSources: true},
+		{Name: catalog.LaneBackfill, Slots: 32, TTFB: 10 * time.Second, RetryTTFB: 120 * time.Second, SlowSources: true, SlowSourcesRetryOnly: true},
 		// Read-through for whitelisted referers; the fair-share key is the referring site.
 		{Name: catalog.LaneDemand, Slots: 32, TTFB: 10 * time.Second, RetryTTFB: 10 * time.Second, Fair: true, CreatorCap: 8},
 	}
@@ -205,7 +210,8 @@ func (s *Scheduler) process(ctx context.Context, l Lane, j catalog.Job) {
 		ttfb = l.RetryTTFB
 	}
 	start := time.Now()
-	res, err := s.Fetcher.Fetch(ctx, j.Root, j.Subpath, ttfb, l.SlowSources)
+	slow := l.SlowSources && (!l.SlowSourcesRetryOnly || j.Attempts > 1)
+	res, err := s.Fetcher.Fetch(ctx, j.Root, j.Subpath, ttfb, slow)
 	if ctx.Err() != nil {
 		return // shutting down: the lease runs out and the fetch is claimed again
 	}

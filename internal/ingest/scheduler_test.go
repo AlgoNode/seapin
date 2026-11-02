@@ -62,11 +62,32 @@ type fakeFetcher struct {
 	res  fetch.Result
 	err  error
 	ttfb time.Duration
+	slow bool
 }
 
-func (f *fakeFetcher) Fetch(_ context.Context, _, _ string, ttfb time.Duration, _ bool) (fetch.Result, error) {
-	f.ttfb = ttfb
+func (f *fakeFetcher) Fetch(_ context.Context, _, _ string, ttfb time.Duration, slow bool) (fetch.Result, error) {
+	f.ttfb, f.slow = ttfb, slow
 	return f.res, f.err
+}
+
+// TestBackfillSlowSourcesOnRetry: the backfill lane's first attempt skips
+// SlowOnly sources (Pinata); retries and the slow lane use them.
+func TestBackfillSlowSourcesOnRetry(t *testing.T) {
+	lanes := DefaultLanes()
+	slowLane, backfill := lanes[1], lanes[2]
+	leaf := "bafkreigh2akiscaildcqabsyg3dfr6chu3fgpregiymsck7e7aqa4s52zy"
+	f := &fakeFetcher{res: fetch.Result{Leaf: leaf, Status: catalog.StatusCached, Mime: "image/png", Source: "kubo"}}
+	s, _, _ := newScheduler(f)
+	for _, c := range []struct {
+		lane     Lane
+		attempts int
+		want     bool
+	}{{backfill, 1, false}, {backfill, 2, true}, {slowLane, 1, true}} {
+		s.process(context.Background(), c.lane, catalog.Job{Root: leaf, Lane: c.lane.Name, Attempts: c.attempts})
+		if f.slow != c.want {
+			t.Errorf("%s attempt %d: slow sources %v, want %v", c.lane.Name, c.attempts, f.slow, c.want)
+		}
+	}
 }
 
 type events struct{ got []contract.Event }
