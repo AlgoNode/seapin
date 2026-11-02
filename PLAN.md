@@ -726,6 +726,24 @@ Exit: the catalog diff between regions stays under 0.1% of CIDs 24 h after the d
 - [ ] Retire kubo, ipfs-cluster and the `static` worker on ipfs-1/2 (**nodely-decommission**), **only after the
       legacy seed is verified**: both regions hold ≥ 99% of the objects `x_asset_meta` lists. Until then those caches
       are the only copy of most historical content.
+      - **Coverage check 2026-11-02 08:45 UTC** (`scripts/coverage`, M0 extract of `x_asset_meta` from 2026-10-30
+        vs both catalogs; the regions agree to within ~120 objects): 4,084,392 distinct (CID, path) objects listed.
+        - cached in both regions: **1,595,735 (39.1%, 1.61 TB)**. All x_asset_meta rows count here, including:
+        - **destroyed assets: 2,431,245 objects, 132 GB.** The scanner skips destroyed assets by design (§1); x_asset_meta
+          keeps them (19.6 M of 23.6 M mainnet assets are destroyed). In 7 days of gateway traffic (M0) they drew
+          1.77% of the successful requests and 4.3% of the bytes (25 k CIDs).
+        - **live-asset objects: 1,653,147, of which 96.53% cached.** The rest:
+          - 27,867 objects (33 GB) of assets created before round ~16.69 M and never reconfigured: those blocks do
+            not record a created asset's id, and the scanner dropped the creations. Fixed in `57f2173` (id from
+            TxnCounter), image `seapin:20261102-1`; needs `legacy-endpoint.sh rescan 16710000`.
+          - 8,885 fetches still pending (52.9 GB; retries of objects no source delivered yet)
+          - 7,914 refused by policy (directories, disallowed types, over 256 MiB)
+          - 7,936 superseded versions: the asset was reconfigured (mostly ARC-19) and seapin holds the newer CID
+          - 4,683 objects (5.1 GB) of live assets with no seapin ref (not analysed yet)
+        - after the rescan, counting current versions and leaving policy refusals out of the denominator:
+          ~1,623.7 k of ~1,637.3 k = **~99.2%** of live-asset objects, i.e. the gate passes for live assets.
+        - open (operator): whether destroyed-asset content is in scope (one-off import of its 2.43 M CIDs vs 404
+          after the cutover for 1.77% of today's successful requests).
 - [ ] Pinata review (D7): keep it only if it delivered objects the IPFS network couldn't.
 - [ ] Runbook for going past 8 TB written down (a second volume as an extra `-dir`, or a second volume server).
 

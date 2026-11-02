@@ -22,6 +22,7 @@ import (
 	"compress/gzip"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -285,6 +286,10 @@ func loadWants(path string) (map[string]want, int, int) {
 		if err != nil {
 			invalid++
 			continue
+		}
+		// x_asset_meta stores paths URL-encoded ("Flamingo%2357.png"); seapin keeps the name ("Flamingo#57.png")
+		if u, err := url.PathUnescape(p); err == nil {
+			p = u
 		}
 		clean, err := cidkey.CleanSubpath(p)
 		if err != nil {
