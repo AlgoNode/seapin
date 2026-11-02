@@ -748,6 +748,8 @@ Exit: the catalog diff between regions stays under 0.1% of CIDs 24 h after the d
         - refused for size (> 256 MiB, D3): 38 objects, 42.3 GB in each region (39 by 2026-11-02 ~10:00 UTC; mostly
           art videos of single ASAs, two zip archives linked from EPOCH edition metadata, largest 4.49 GiB).
           **Operator 2026-11-02: keep the 256 MiB cap.**
+- [ ] At promotion: re-enable the disk-forecast triggers quieted for pre-production
+      (`algoup tools/zabbix/zbx_seapin_preprod.py --off`, 2026-11-02).
 - [ ] Pinata review (D7): keep it only if it delivered objects the IPFS network couldn't.
 - [ ] Runbook for going past 8 TB written down (a second volume as an extra `-dir`, or a second volume server).
 
