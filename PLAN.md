@@ -965,3 +965,43 @@ and abuse contact details in the portal terms.
 | P6 | Provide strategy | `pinned+entities` with the sweep provider | ~1 record per file instead of per 256 KiB chunk |
 | P7 | Pin/cache overlap | A (keep the copy), measure, revisit B if overlap > ~20% of pinned bytes | keeps the free cache independent of paid lifecycle |
 | P8 (open: operator asks to define the pinning service's shape first) | Boost and the gateway | pins of Boost endpoints served through the gateway only for their own verified sites and token | Boost has no `ipfsGateway` today; pins without a way to read them back over HTTP would be odd |
+
+## 6. Image vectors and semantic image search (research, 2026-11-02)
+
+**Ask (operator):** embed every image in the cache with Qwen3-VL-Embedding-2B (except content of the coming pinning
+service), keep the vectors, and offer a semantic image search API.
+
+**Facts:** both regions cache 1.36 M images (1.55 TB): png 856 k (1.17 TB, avg 1.4 MB), webp 281 k, jpeg 180 k, gif
+47 k, a few hundred svg/bmp/avif. New chain content is ~1,000 objects a day. The model runs as the `embed-img` seat on
+alab (`nodely/emb-img` via router.ai.nodely.io, or the tailnet seat): BF16, 2048-d Matryoshka (1024-d keeps 90% of the
+top-10 neighbours), images ≤ 512×512 as `data:` URLs only, **58 images/s** measured (2026-10-30: ~6.5 h for all of
+them). ai1's GPU is taken by vLLM (96.9 of 97.9 GB); ai1 has 48 cores, 133 GB RAM free, 515 GB disk. ClickHouse dw2
+runs 26.7 (vector similarity index, HNSW, GA since 25.8). Precedent: ariadne-vectors computes on ai1 and serves from
+Postgres + pgvector (HNSW).
+
+**Recommended shape:**
+- **A stack `nft-vectors` on ai1** (compose, like ariadne-vectors): a worker, the search API, its own Postgres with
+  pgvector.
+- **Worker:** reads new image objects from seapin (EU internal listener), fetches the bytes, decodes and downsizes on
+  ai1's CPUs to ≤ 512×512 JPEG (first frame of animated GIF/WebP; SVG rasterised or skipped), dedups by content hash,
+  sends the small data URL to the alab seat (~60 KB per image, not the 1.4 MB original), stores the vector.
+  Backfill ~6.5 h at the seat's 58/s; then ~1,000 a day.
+- **Store: Postgres + pgvector on ai1**, `halfvec(1024)` (the first 1024 Matryoshka values, renormalised) with an HNSW
+  index: ~2.8 GB of vectors + graph, sub-10 ms queries, isolated from dw2's ETL load; keep the full 2048-d in a plain
+  column only if the operator wants re-ranking. ClickHouse dw2 would allow hybrid queries joined with
+  `mainnet.asset_enrich` in one place, but puts an interactive API on the shared analytics server and needs the
+  nodely-clickhouse gate; a nightly copy of the vectors to dw2 for analytics (near-duplicates, clustering) can come later.
+- **Search API:** text → vector through the same seat (query embeddings cached), image → vector (upload or CID), then
+  HNSW top-k, returning CIDs with their assets (seapin `/internal/cids/{cid}/assets`, or an asset map the worker keeps).
+  It depends on alab for query embeddings (one home GPU): a timeout and a clear error, no silent fallback.
+
+**What seapin provides (small changes):**
+1. **A feed of image objects:** `/internal/catalog/objects` gains `mime` and `size` and a `mime_prefix=image/` filter;
+   the worker pages it with the same since/after watermark as anti-entropy (backfill and incremental in one).
+2. **Byte access:** a read-only token for the vectors service on the internal listener (not the peer token), and UFW
+   8098 open to ai1.
+3. **CID → assets:** already there (`/internal/cids/{cid}/assets`, migration 0004).
+4. **Takedowns and policy:** the worker drops vectors of taken-down CIDs (`/internal/catalog/takedowns`).
+5. **Pinned content excluded:** pin-only content never enters the cache, so it is excluded by construction; content
+   that is both pinned and chain-referenced needs the M7 pin catalog's CID list (or a `pinned` flag on the feed) so the
+   worker skips or deletes those vectors.
