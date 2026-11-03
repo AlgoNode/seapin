@@ -104,6 +104,9 @@ func (c *Catalog) ApplyRef(ctx context.Context, r contract.Ref) (queued int64, e
 // promotes a waiting backfill fetch to the fast lane; a failed fetch is
 // re-armed at most once per 30 days.
 func enqueue(ctx context.Context, q querier, f fetchReq) (int64, error) {
+	if blocked, err := creatorBlocked(ctx, q, f.root); err != nil || blocked {
+		return 0, err
+	}
 	leaf, err := knownLeaf(ctx, q, f.root, f.subpath)
 	if err != nil {
 		return 0, err
@@ -131,6 +134,29 @@ func enqueue(ctx context.Context, q querier, f fetchReq) (int64, error) {
 		return 0, err
 	}
 	return tag.RowsAffected(), nil
+}
+
+// creatorBlocked reports whether root is referenced by a creator in
+// blocked_creators, and records root as a blocked object the first time: serve
+// then answers 403 at once and nothing ever fetches it. The refs stay. The
+// creator is looked up through refs, not the fetch request, so roots queued by
+// anti-entropy (SyncCreator) are caught too.
+func creatorBlocked(ctx context.Context, q querier, root string) (bool, error) {
+	var reason string
+	err := q.QueryRow(ctx, `
+		SELECT b.reason FROM refs r JOIN blocked_creators b ON b.creator = r.creator
+		WHERE r.root_cid = $1 LIMIT 1`, root).Scan(&reason)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	_, err = q.Exec(ctx, `
+		INSERT INTO objects (cid, status, reason) VALUES ($1, 'blocked', $2)
+		ON CONFLICT (cid) DO UPDATE SET status = 'blocked', reason = EXCLUDED.reason
+		WHERE objects.status NOT IN ('cached', 'blocked')`, root, "creator_excluded: "+reason)
+	return true, err
 }
 
 // knownLeaf is the leaf CID already recorded for root/subpath, or "".
