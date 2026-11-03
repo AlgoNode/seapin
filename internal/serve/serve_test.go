@@ -512,3 +512,38 @@ func (fakeSync) AliasesPage(context.Context, string, string, int) ([]catalog.Syn
 func (fakeSync) TakedownList(context.Context) (map[string]string, error) {
 	return map[string]string{}, nil
 }
+
+// /internal/assets: JSON up to 10 KiB inline as content, a larger one as its first 10 KiB in head (the compat
+// writer's ARC-3/NFD check).
+func TestInternalAssetJSONHead(t *testing.T) {
+	f := newFixture(t)
+	small := []byte(`{"image":"ipfs://x"}`)
+	big := []byte(`{"image":"ipfs://y","pad":"` + strings.Repeat("z", 12000) + `"}`)
+	f.put("bafysmall", small, "application/json")
+	f.put("bafybig", big, "application/json")
+	f.cat.assets = []catalog.AssetObject{
+		{Key: "mainnet-v1.0/1/url", Root: "bafysmall", Leaf: "bafysmall", Status: "cached", Mime: "application/json", Size: int64(len(small))},
+		{Key: "mainnet-v1.0/1/url/x", Root: "bafybig", Leaf: "bafybig", Status: "cached", Mime: "application/json", Size: int64(len(big))},
+	}
+	h := New(Options{Store: f.st, Catalog: f.cat, Takedowns: f.td, Log: slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Registry: prometheus.NewRegistry()}).InternalRoutes(strings.Repeat("t", 32))
+	req := httptest.NewRequest("GET", "/internal/assets/mainnet-v1.0/1", nil)
+	req.Header.Set("Authorization", "Bearer "+strings.Repeat("t", 32))
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	var out struct {
+		Objects []struct {
+			Content json.RawMessage `json:"content"`
+			Head    string          `json:"head"`
+		} `json:"objects"`
+	}
+	if rec.Code != 200 || json.Unmarshal(rec.Body.Bytes(), &out) != nil || len(out.Objects) != 2 {
+		t.Fatalf("%d %s", rec.Code, rec.Body.String()[:min(200, rec.Body.Len())])
+	}
+	if string(out.Objects[0].Content) != string(small) || out.Objects[0].Head != "" {
+		t.Fatalf("small: %+v", out.Objects[0])
+	}
+	if out.Objects[1].Content != nil || len(out.Objects[1].Head) != 10<<10 || !strings.HasPrefix(out.Objects[1].Head, `{"image":"ipfs://y"`) {
+		t.Fatalf("big: content %d head %d", len(out.Objects[1].Content), len(out.Objects[1].Head))
+	}
+}

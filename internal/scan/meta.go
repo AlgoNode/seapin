@@ -105,6 +105,7 @@ type resolvedObject struct {
 	Mime    string          `json:"mime"`
 	Size    int64           `json:"size"`
 	Content json.RawMessage `json:"content"`
+	Head    string          `json:"head"` // first 10 KiB of a larger JSON object
 }
 
 func (m *MetaWriter) one(ctx context.Context, a dueAsset) error {
@@ -199,10 +200,12 @@ type assetMeta struct {
 	Extra    map[string]*metaObject `json:"extra,omitempty"`
 }
 
-// buildMeta keeps one object per media class as the old scanner did: links in
-// its order (the asset URL, then the JSON's image, animation_url,
-// properties.file_url), a later one replacing an earlier one of the same class
-// (its ASAextra held one object per class). Cached objects and ones the policy
+// buildMeta keeps one object per media class as the old scanner did. Its links
+// decide (the asset URL, then the JSON's image, animation_url,
+// properties.file_url, recursively), a later one replacing an earlier one of
+// the same class (its ASAextra held one object per class). Every other link
+// seapin follows (more JSON fields, ARC-69 notes) only fills a class those left
+// empty, first in key order, never replacing one. Cached objects and ones the policy
 // refused count, the latter under their detected type (the old scanner recorded
 // those too, e.g. text/plain under oth). CIDs and paths keep the spelling the
 // asset used: seapin normalises to CIDv1 and unescaped paths, the old rows hold
@@ -215,17 +218,33 @@ func buildMeta(a dueAsset, objs []resolvedObject) assetMeta {
 		}
 	}
 	v0Template := strings.Contains(a.url, "{ipfscid:0:")
-	objs = slices.Clone(objs)
-	slices.SortStableFunc(objs, func(x, y resolvedObject) int { return linkOrder(x.Key) - linkOrder(y.Key) })
+	var primary, secondary []resolvedObject
+	for _, o := range objs {
+		if _, ok := oldLink(o.Key); ok {
+			primary = append(primary, o)
+		} else {
+			secondary = append(secondary, o)
+		}
+	}
+	slices.SortStableFunc(primary, func(x, y resolvedObject) int {
+		rx, _ := oldLink(x.Key)
+		ry, _ := oldLink(y.Key)
+		return slices.Compare(rx, ry)
+	})
+	objs = append(primary, secondary...)
+	nPrimary := len(primary)
 	m := assetMeta{ID: a.id, Name: a.name, UnitName: a.unit, URL: a.url, Round: a.refRound, Extra: map[string]*metaObject{}}
 	if len(a.reserve) == 32 {
 		m.Reserve = types.Address(a.reserve).String()
 	}
-	for _, o := range objs {
+	for i, o := range objs {
 		if o.Status != "cached" && o.Status != "blocked" {
 			continue
 		}
 		class := mediaClass(o.Mime)
+		if i >= nPrimary && m.Extra[class] != nil {
+			continue // a link the old scanner did not follow only fills a gap
+		}
 		w := written
 		if v0Template && strings.HasSuffix(o.Key, "/url") {
 			w = append(w, v0Of(o.Root)) // the template's own CID is v0
@@ -238,17 +257,15 @@ func buildMeta(a dueAsset, objs []resolvedObject) assetMeta {
 		if o.Status == "blocked" {
 			mo.Content = nil
 		}
-		if class == "json" && len(o.Content) > 0 {
-			var head struct {
-				Image      *string `json:"image"`
-				NFDAccount *string `json:"nfdAccount"`
+		if class == "json" && o.Status == "cached" {
+			text := string(o.Content)
+			if text == "" {
+				text = o.Head
 			}
-			if json.Unmarshal(o.Content, &head) == nil {
-				switch {
-				case head.NFDAccount != nil:
+			if topString(text, "image") {
+				mo.Type = "ARC-3"
+				if topString(text, "nfdAccount") {
 					mo.Type = "NFD"
-				case head.Image != nil:
-					mo.Type = "ARC-3"
 				}
 			}
 		}
@@ -339,20 +356,58 @@ func classByExt(u string) string {
 	return ""
 }
 
-// linkOrder ranks an object by the old scanner's order of links: the asset URL's
-// own object, then image, animation_url, properties.file_url (a later one wins).
-func linkOrder(key string) int {
-	switch {
-	case strings.HasSuffix(key, "/url"):
-		return 0
-	case strings.HasSuffix(key, "/image"):
-		return 1
-	case strings.HasSuffix(key, "/animation_url"):
-		return 2
-	case strings.HasSuffix(key, "/properties/file_url"):
-		return 3
+// oldLink reports whether key (<chain>/<asset>/url[/...]) is a link the old
+// scanner followed: the asset URL, then from each JSON object image,
+// animation_url and properties.file_url, depth first. rank orders such keys as
+// the old scanner visited them.
+func oldLink(key string) (rank []int, ok bool) {
+	i := strings.Index(key, "/url")
+	if i < 0 || (len(key) > i+4 && key[i+4] != '/') {
+		return nil, false
 	}
-	return 1
+	rest := strings.TrimPrefix(key[i+4:], "/")
+	rank = []int{0}
+	for rest != "" {
+		switch {
+		case rest == "image" || strings.HasPrefix(rest, "image/"):
+			rank, rest = append(rank, 1), strings.TrimPrefix(strings.TrimPrefix(rest, "image"), "/")
+		case rest == "animation_url" || strings.HasPrefix(rest, "animation_url/"):
+			rank, rest = append(rank, 2), strings.TrimPrefix(strings.TrimPrefix(rest, "animation_url"), "/")
+		case rest == "properties/file_url" || strings.HasPrefix(rest, "properties/file_url/"):
+			rank, rest = append(rank, 3), strings.TrimPrefix(strings.TrimPrefix(rest, "properties/file_url"), "/")
+		default:
+			return nil, false
+		}
+	}
+	return rank, true
+}
+
+// topString reports whether JSON text (possibly cut off, as the old scanner read
+// 10 KiB) has a top-level key with a string value, like jsonparser.GetString.
+func topString(text, key string) bool {
+	dec := json.NewDecoder(strings.NewReader(text))
+	if t, err := dec.Token(); err != nil || t != json.Delim('{') {
+		return false
+	}
+	for {
+		t, err := dec.Token()
+		if err != nil {
+			return false
+		}
+		k, ok := t.(string)
+		if !ok {
+			return false
+		}
+		if k == key {
+			v, err := dec.Token()
+			_, isStr := v.(string)
+			return err == nil && isStr
+		}
+		var skip json.RawMessage
+		if err := dec.Decode(&skip); err != nil {
+			return false
+		}
+	}
 }
 
 // spelledPath returns the subpath escaped as the asset wrote it after root

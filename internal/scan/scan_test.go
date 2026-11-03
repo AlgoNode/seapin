@@ -355,3 +355,49 @@ func v1of(t *testing.T, v0 string) string {
 	}
 	return cid.NewCidV1(c.Type(), c.Hash()).String()
 }
+
+// Links the old scanner did not follow only fill an empty class (cases from the 2026-11-03 comparison).
+func TestBuildMetaOldLinksDecide(t *testing.T) {
+	k := func(s string) string { return "mainnet-v1.0/880643891/" + s }
+	big := `{"name":"x","image":"ipfs://bafybeiart","artifactUri":"ipfs://bafybeiart","thumbnailUri":"ipfs://bafybeithumb","pad":"` + strings.Repeat("z", 12000)
+	m := buildMeta(dueAsset{id: 880643891, url: "ipfs://QmJSON"}, []resolvedObject{
+		{Key: k("url"), Root: "bafyjson", Status: "cached", Mime: "application/json", Size: 11159, Head: big[:10240]},
+		{Key: k("url/artifactUri"), Root: "bafybeiart", Status: "cached", Mime: "image/png", Size: 190015},
+		{Key: k("url/assets/0/thumbnailUri"), Root: "bafybeithumb", Status: "cached", Mime: "image/jpeg", Size: 10788},
+		{Key: k("url/image"), Root: "bafybeiart", Status: "cached", Mime: "image/png", Size: 190015},
+		{Key: k("url/thumbnailUri"), Root: "bafybeithumb", Status: "cached", Mime: "image/jpeg", Size: 10788},
+	})
+	if m.Extra["img"].CID != "bafybeiart" || m.Extra["json"].Type != "ARC-3" {
+		t.Fatalf("thumbnail won or no type: img %+v json %+v", m.Extra["img"], m.Extra["json"])
+	}
+	// ARC-69 note image: does not replace the URL's own image (1117782979), but fills an empty class
+	k2 := func(s string) string { return "mainnet-v1.0/1117782979/" + s }
+	v1, v0 := "bafybeihiroqxqosfzlumegz6moj6jyrgp42alkqyx5y7gg4ybxd453auqq", "QmdzQnWrYgyojPgKNp3mZ8oSkMVrNr7KRVeHbhh5htW18w"
+	m = buildMeta(dueAsset{id: 1117782979, url: "ipfs://" + v0}, []resolvedObject{
+		{Key: k2("note/image"), Root: v1, Status: "cached", Mime: "image/png"},
+		{Key: k2("url"), Root: v1, Status: "cached", Mime: "image/png"},
+	})
+	if m.Extra["img"].CID != v0 {
+		t.Fatalf("note replaced the url object: %+v", m.Extra["img"])
+	}
+	m = buildMeta(dueAsset{id: 5, url: "https://example.com/page"}, []resolvedObject{
+		{Key: "mainnet-v1.0/5/note/animation_url", Root: "bafyvid", Status: "cached", Mime: "video/mp4"}})
+	if m.Extra["vid"] == nil || m.Extra["vid"].CID != "bafyvid" {
+		t.Fatalf("note should fill an empty class: %+v", m.Extra)
+	}
+}
+
+func TestTopString(t *testing.T) {
+	for text, want := range map[string]bool{
+		`{"name":"a","image":"ipfs://x"}`:           true,
+		`{"name":"a","image":"ipfs://x","pad":"zzz`: true, // cut off after the key: still found
+		`{"name":"a","pad":"zzz`:                    false,
+		`{"properties":{"image":"x"}}`:              false, // not top level
+		`{"image":5}`:                               false,
+		`not json`:                                  false,
+	} {
+		if topString(text, "image") != want {
+			t.Errorf("%q: want %v", text, want)
+		}
+	}
+}

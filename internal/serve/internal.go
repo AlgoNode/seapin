@@ -57,6 +57,7 @@ type assetObject struct {
 	Size    int64           `json:"size,omitempty"`
 	Reason  string          `json:"reason,omitempty"`
 	Content json.RawMessage `json:"content,omitempty"` // cached JSON up to 10 KiB
+	Head    string          `json:"head,omitempty"`    // larger cached JSON: its first 10 KiB (not valid JSON)
 }
 
 func (h *Handler) asset(w http.ResponseWriter, r *http.Request) {
@@ -82,8 +83,12 @@ func (h *Handler) asset(w http.ResponseWriter, r *http.Request) {
 			Key: o.Key, Root: o.Root, Subpath: o.Subpath, CID: o.Leaf, Depth: o.Depth,
 			Status: o.Status, Mime: o.Mime, Size: o.Size, Reason: o.Reason,
 		}
-		if o.Status == string(catalog.StatusCached) && o.Mime == "application/json" && o.Size <= maxInlineJSON {
-			ao.Content = h.readJSON(r, o.Leaf)
+		if o.Status == string(catalog.StatusCached) && o.Mime == "application/json" {
+			if o.Size <= maxInlineJSON {
+				ao.Content = h.readJSON(r, o.Leaf)
+			} else {
+				ao.Head = h.readHead(r, o.Leaf) // the compat writer's ARC-3/NFD check, as the old scanner did on 10 KiB
+			}
 		}
 		out.Objects = append(out.Objects, ao)
 	}
@@ -103,6 +108,16 @@ func (h *Handler) readJSON(r *http.Request, leaf string) json.RawMessage {
 		return nil
 	}
 	return b
+}
+
+func (h *Handler) readHead(r *http.Request, leaf string) string {
+	body, err := h.Store.GetRange(r.Context(), cidkey.ObjectKey(leaf), 0)
+	if err != nil {
+		return ""
+	}
+	defer body.Close()
+	b, _ := io.ReadAll(io.LimitReader(body, maxInlineJSON))
+	return strings.ToValidUTF8(string(b), "")
 }
 
 // maxCIDAssets caps /internal/cids/{cid}/assets; a shared default image can be
