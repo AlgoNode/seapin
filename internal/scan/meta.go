@@ -10,8 +10,10 @@ import (
 	"time"
 
 	"github.com/algorand/go-algorand-sdk/v2/types"
+	"github.com/ipfs/go-cid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	mh "github.com/multiformats/go-multihash"
 	"github.com/prometheus/client_golang/prometheus"
 )
 
@@ -195,26 +197,38 @@ type assetMeta struct {
 	Extra    map[string]*metaObject `json:"extra,omitempty"`
 }
 
-// buildMeta keeps the first cached object of each media class, in key order
-// (the URL's own object first), as the old scanner did.
+// buildMeta keeps the first object of each media class, in key order (the
+// URL's own object first), as the old scanner did: cached ones, and ones the
+// policy refused, under their detected type (the old scanner recorded those
+// too, e.g. text/plain under oth). CIDs keep the spelling the asset used: seapin
+// normalises to CIDv1, the old rows hold what the URL or the JSON said (v0 Qm…).
 func buildMeta(a dueAsset, objs []resolvedObject) assetMeta {
+	written := []string{a.url}
+	for _, o := range objs {
+		if len(o.Content) > 0 {
+			written = append(written, string(o.Content))
+		}
+	}
 	m := assetMeta{ID: a.id, Name: a.name, UnitName: a.unit, URL: a.url, Round: a.refRound, Extra: map[string]*metaObject{}}
 	if len(a.reserve) == 32 {
 		m.Reserve = types.Address(a.reserve).String()
 	}
 	for _, o := range objs {
-		if o.Status != "cached" {
+		if o.Status != "cached" && o.Status != "blocked" {
 			continue
 		}
 		class := mediaClass(o.Mime)
 		if m.Extra[class] != nil {
 			continue
 		}
-		cid := o.Root
+		cid := spelled(o.Root, written)
 		if o.Subpath != "" {
 			cid += "/" + o.Subpath
 		}
 		mo := &metaObject{MimeType: o.Mime, Bytes: o.Size, CID: cid, Content: o.Content}
+		if o.Status == "blocked" {
+			mo.Content = nil
+		}
 		if class == "json" && len(o.Content) > 0 {
 			var head struct {
 				Image      *string `json:"image"`
@@ -231,10 +245,110 @@ func buildMeta(a dueAsset, objs []resolvedObject) assetMeta {
 		}
 		m.Extra[class] = mo
 	}
+	webLinks(a, objs, m.Extra)
 	if len(m.Extra) == 0 {
 		m.Extra = nil
 	}
 	return m
+}
+
+// webLinks records links to plain web URLs (not IPFS) as {url} only, never
+// fetched (operator 2026-11-03; the old scanner fetched them, an SSRF surface):
+// the asset URL itself, and the media fields of its JSON metadata (NFD avatars on
+// images.nf.domains). Only where seapin resolved no object for that link, and
+// never over an object of the same class.
+func webLinks(a dueAsset, objs []resolvedObject, extra map[string]*metaObject) {
+	have := map[string]bool{}
+	for _, o := range objs {
+		have[o.Key] = true
+	}
+	urlKey := ""
+	for _, o := range objs { // the asset URL's own object key, e.g. mainnet-v1.0/<asset>/url
+		if strings.HasSuffix(o.Key, "/url") {
+			urlKey = o.Key
+		}
+	}
+	type link struct{ path, url, class string }
+	var links []link
+	if isWeb(a.url) && urlKey == "" {
+		links = append(links, link{"url", a.url, "img"})
+	}
+	for _, o := range objs {
+		if mediaClass(o.Mime) != "json" || len(o.Content) == 0 {
+			continue
+		}
+		var j struct {
+			Image      string `json:"image"`
+			Animation  string `json:"animation_url"`
+			Properties struct {
+				FileURL string `json:"file_url"`
+			} `json:"properties"`
+		}
+		if json.Unmarshal(o.Content, &j) != nil {
+			continue
+		}
+		for _, l := range []link{{"image", j.Image, "img"}, {"animation_url", j.Animation, "vid"}, {"properties/file_url", j.Properties.FileURL, "oth"}} {
+			if isWeb(l.url) && !have[o.Key+"/"+l.path] {
+				links = append(links, l)
+			}
+		}
+	}
+	for _, l := range links {
+		class := l.class
+		if c := classByExt(l.url); c != "" {
+			class = c
+		}
+		if extra[class] == nil {
+			extra[class] = &metaObject{URL: l.url}
+		}
+	}
+}
+
+// isWeb: an http(s) URL that is not an IPFS gateway path (those seapin resolves itself).
+func isWeb(u string) bool {
+	l := strings.ToLower(u)
+	return (strings.HasPrefix(l, "https://") || strings.HasPrefix(l, "http://")) && !strings.Contains(l, "/ipfs/") &&
+		!strings.Contains(l, ".ipfs.")
+}
+
+func classByExt(u string) string {
+	p := strings.ToLower(u)
+	if i := strings.IndexAny(p, "?#"); i >= 0 {
+		p = p[:i]
+	}
+	switch {
+	case strings.HasSuffix(p, ".png"), strings.HasSuffix(p, ".jpg"), strings.HasSuffix(p, ".jpeg"), strings.HasSuffix(p, ".gif"),
+		strings.HasSuffix(p, ".webp"), strings.HasSuffix(p, ".svg"), strings.HasSuffix(p, ".avif"):
+		return "img"
+	case strings.HasSuffix(p, ".mp4"), strings.HasSuffix(p, ".webm"), strings.HasSuffix(p, ".mov"):
+		return "vid"
+	case strings.HasSuffix(p, ".mp3"), strings.HasSuffix(p, ".wav"), strings.HasSuffix(p, ".ogg"), strings.HasSuffix(p, ".flac"):
+		return "aud"
+	case strings.HasSuffix(p, ".json"):
+		return "json"
+	}
+	return ""
+}
+
+// spelled returns norm as the asset wrote it: the CIDv0 form when norm is a
+// dag-pb sha2-256 CIDv1 whose v0 string appears in the asset's URL or JSON,
+// else norm.
+func spelled(norm string, written []string) string {
+	c, err := cid.Decode(norm)
+	if err != nil || c.Version() != 1 || c.Type() != cid.DagProtobuf {
+		return norm
+	}
+	dec, err := mh.Decode(c.Hash())
+	if err != nil || dec.Code != mh.SHA2_256 || dec.Length != 32 {
+		return norm
+	}
+	v0 := cid.NewCidV0(c.Hash()).String()
+	for _, w := range written {
+		if strings.Contains(w, v0) {
+			return v0
+		}
+	}
+	return norm
 }
 
 func mediaClass(mime string) string {

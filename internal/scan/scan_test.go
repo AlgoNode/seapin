@@ -237,8 +237,34 @@ func TestBuildMeta(t *testing.T) {
 	}
 	r := address(3)
 	m := buildMeta(dueAsset{id: 1, name: "N", url: "ipfs://bafyjson", reserve: r[:], refRound: 9}, objs)
-	if m.Extra["json"].Type != "ARC-3" || m.Extra["img"].CID != "bafypng" || m.Extra["oth"] != nil || m.Reserve != r.String() {
-		t.Errorf("meta %+v json %+v img %+v", m, m.Extra["json"], m.Extra["img"])
+	// a refused object is recorded under its detected type, without content, as the old scanner did
+	if m.Extra["json"].Type != "ARC-3" || m.Extra["img"].CID != "bafypng" || m.Reserve != r.String() ||
+		m.Extra["oth"] == nil || m.Extra["oth"].MimeType != "text/html" || m.Extra["oth"].Content != nil {
+		t.Errorf("meta %+v json %+v img %+v oth %+v", m, m.Extra["json"], m.Extra["img"], m.Extra["oth"])
+	}
+}
+
+// CIDs keep the asset's spelling (mainnet asset 304870825: its URL says Qm…, seapin holds the CIDv1); a CID the
+// asset wrote as v1, or a raw-leaf CID (no v0 form), stays as seapin has it.
+func TestBuildMetaCIDSpelling(t *testing.T) {
+	v1 := "bafybeibtwxnovbesjuk5437r7bwilfxzvmibxezj5b2ewy2xm7nxkca3fq"
+	v0 := "QmRpWLRf2iHFRDSqW3JdBQPQjZ9PSw2i36jWxKttbnuPxo"
+	m := buildMeta(dueAsset{id: 304870825, url: "ipfs://" + v0}, []resolvedObject{
+		{Key: "c/304870825/url", Root: v1, Status: "cached", Mime: "image/png", Size: 1559297}})
+	if m.Extra["img"].CID != v0 {
+		t.Fatalf("v0 asset: %s", m.Extra["img"].CID)
+	}
+	m = buildMeta(dueAsset{id: 1, url: "ipfs://" + v1}, []resolvedObject{
+		{Key: "c/1/url", Root: v1, Subpath: "a.png", Status: "cached", Mime: "image/png"}})
+	if m.Extra["img"].CID != v1+"/a.png" {
+		t.Fatalf("v1 asset: %s", m.Extra["img"].CID)
+	}
+	// a child referenced as v0 inside the JSON keeps v0
+	m = buildMeta(dueAsset{id: 2, url: "ipfs://bafkreiaaa"}, []resolvedObject{
+		{Key: "c/2/url", Root: "bafkreiaaa", Status: "cached", Mime: "application/json", Content: []byte(`{"image":"ipfs://` + v0 + `"}`)},
+		{Key: "c/2/url/image", Root: v1, Status: "cached", Mime: "image/png"}})
+	if m.Extra["img"].CID != v0 || m.Extra["json"].CID != "bafkreiaaa" {
+		t.Fatalf("child: img %s json %s", m.Extra["img"].CID, m.Extra["json"].CID)
 	}
 }
 
@@ -269,5 +295,27 @@ func TestMetaTable(t *testing.T) {
 		if got := (&MetaWriter{Table: in}).table(); got != want {
 			t.Errorf("%q: %s, want %s", in, got, want)
 		}
+	}
+}
+
+// Web links (not IPFS) are recorded as {url} only, never fetched, and never over an IPFS object of the same class.
+func TestBuildMetaWebLinks(t *testing.T) {
+	nfd := `{"name":"x.algo","image":"https://images.nf.domains/avatar/81f5d29b","properties":{"file_url":"https://e.com/a.mp4"}}`
+	m := buildMeta(dueAsset{id: 765901320, url: "template-ipfs://{ipfscid:1:dag-pb:reserve:sha2-256}/nfd.json"}, []resolvedObject{
+		{Key: "mainnet-v1.0/765901320/url", Root: "bafyjson", Status: "cached", Mime: "application/json", Content: []byte(nfd)}})
+	if m.Extra["img"] == nil || m.Extra["img"].URL != "https://images.nf.domains/avatar/81f5d29b" || m.Extra["img"].MimeType != "" ||
+		m.Extra["vid"] == nil || m.Extra["vid"].URL != "https://e.com/a.mp4" {
+		t.Fatalf("nfd: img %+v vid %+v", m.Extra["img"], m.Extra["vid"])
+	}
+	// the asset URL itself is a web page
+	m = buildMeta(dueAsset{id: 409755065, url: "https://ipfs.dahai.art/lot/59724"}, nil)
+	if m.Extra["img"] == nil || m.Extra["img"].URL != "https://ipfs.dahai.art/lot/59724" {
+		t.Fatalf("web asset url: %+v", m.Extra)
+	}
+	// an IPFS image wins; a gateway URL is not a web link (seapin resolves those)
+	m = buildMeta(dueAsset{id: 3, url: "https://gateway.pinata.cloud/ipfs/bafypng"}, []resolvedObject{
+		{Key: "mainnet-v1.0/3/url", Root: "bafypng", Status: "cached", Mime: "image/png"}})
+	if m.Extra["img"].CID != "bafypng" || m.Extra["img"].URL != "" {
+		t.Fatalf("ipfs wins: %+v", m.Extra["img"])
 	}
 }
