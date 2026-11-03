@@ -215,6 +215,8 @@ func buildMeta(a dueAsset, objs []resolvedObject) assetMeta {
 	for _, o := range objs {
 		if len(o.Content) > 0 {
 			written = append(written, string(o.Content))
+		} else if o.Head != "" {
+			written = append(written, o.Head) // a larger JSON's first 10 KiB, as far as the old scanner read it
 		}
 	}
 	v0Template := strings.Contains(a.url, "{ipfscid:0:")

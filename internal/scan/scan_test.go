@@ -401,3 +401,16 @@ func TestTopString(t *testing.T) {
 		}
 	}
 }
+
+// A v0 CID written inside a larger JSON (only its head is known) keeps v0 (asset 880643891).
+func TestBuildMetaSpellingFromHead(t *testing.T) {
+	v0 := "QmUyostGk4EgNXZLsqxSGR9kBMzChp5VxuUpphKLX5ZppA"
+	v1 := v1of(t, v0)
+	head := `{"name":"x","image":"ipfs://` + v0 + `","pad":"` + strings.Repeat("z", 10200)
+	m := buildMeta(dueAsset{id: 880643891, url: "ipfs://bafybeijson"}, []resolvedObject{
+		{Key: "mainnet-v1.0/880643891/url", Root: "bafybeijson", Status: "cached", Mime: "application/json", Head: head[:10240]},
+		{Key: "mainnet-v1.0/880643891/url/image", Root: v1, Status: "cached", Mime: "image/png"}})
+	if m.Extra["img"].CID != v0 {
+		t.Fatalf("spelling from head: %s", m.Extra["img"].CID)
+	}
+}
