@@ -53,8 +53,11 @@ type Ingest struct {
 	SyncInterval time.Duration // anti-entropy pull from the peer (default 24h; 0 = off)
 	SyncPage     int
 	PeerToken    string
-	PinataURL    string // optional last source, slow lanes only
-	PinataToken  string
+	// FilecoinURL: optional, slow lanes only, before the sidecar: a rainbow in remote-backend mode over a Filecoin
+	// storage provider's HTTP retrieval (blocks verified there), for CIDs gone from bitswap (2026-11-03).
+	FilecoinURL string
+	PinataURL   string // optional last source, slow lanes only
+	PinataToken string
 
 	FastSlots, SlowSlots, BackfillSlots, DemandSlots        int
 	FastTTFB, SlowTTFB, BackfillTTFB, RetryTTFB, DemandTTFB time.Duration
@@ -81,6 +84,7 @@ func LoadIngest() (Config, Ingest, error) {
 		PeerFirst:    os.Getenv("PEER_FIRST") != "false",
 		SyncInterval: p.dur("SYNC_INTERVAL", 24*time.Hour),
 		SyncPage:     p.int("SYNC_PAGE", 2000),
+		FilecoinURL:  os.Getenv("FILECOIN_URL"),
 		PinataURL:    os.Getenv("PINATA_URL"),
 		PinataToken:  os.Getenv("PINATA_TOKEN"),
 

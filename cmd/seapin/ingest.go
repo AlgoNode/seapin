@@ -70,6 +70,11 @@ func runIngest(ctx context.Context, log *slog.Logger) error {
 	if !ing.PeerFirst {
 		sources = append(sources, peer...)
 	}
+	if ing.FilecoinURL != "" {
+		// A miss answers 502 in under a second (the provider's 404), so asking it before the sidecar's slow
+		// bitswap search costs little; fast-lane fetches (new mints, still on bitswap) skip it.
+		sources = append(sources, fetch.Source{Name: "filecoin", BaseURL: ing.FilecoinURL, SlowOnly: true, MissOK: true})
+	}
 	sources = append(sources, fetch.Source{Name: "sidecar", BaseURL: ing.SidecarURL})
 	if ing.PinataURL != "" {
 		sources = append(sources, fetch.Source{

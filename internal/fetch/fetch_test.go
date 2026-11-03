@@ -295,3 +295,34 @@ func TestFetchDeadPeerBackoff(t *testing.T) {
 		t.Error("backoff did not expire")
 	}
 }
+
+// The filecoin source (a rainbow over a Filecoin provider's HTTP retrieval): slow lanes only, before the sidecar; a
+// miss there is the remote backend's 502 and the next source is asked.
+func TestFetchFilecoinSource(t *testing.T) {
+	miss := serve(t, func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "failed to resolve /ipfs/x: Bad Gateway: http error from car gateway: 404 Not Found", http.StatusBadGateway)
+	})
+	hit := serve(t, file(png, leaf))
+	sidecar := serve(t, file(png, leaf))
+	f, _ := newFetcher(
+		Source{Name: "filecoin", BaseURL: hit.URL, SlowOnly: true, MissOK: true},
+		Source{Name: "sidecar", BaseURL: sidecar.URL},
+	)
+	if res, err := f.Fetch(context.Background(), leaf, "", time.Second, false); err != nil || res.Source != "sidecar" || hit.hits.Load() != 0 {
+		t.Fatalf("fast lane must skip filecoin: %+v %v", res, err)
+	}
+	f, _ = newFetcher(f.Sources...) // empty store: the fast-lane fetch above stored the object
+	if res, err := f.Fetch(context.Background(), leaf, "", time.Second, true); err != nil || res.Source != "filecoin" {
+		t.Fatalf("slow lane: %+v %v", res, err)
+	}
+	f, _ = newFetcher(
+		Source{Name: "filecoin", BaseURL: miss.URL, SlowOnly: true, MissOK: true},
+		Source{Name: "sidecar", BaseURL: sidecar.URL},
+	)
+	if res, err := f.Fetch(context.Background(), leaf, "", time.Second, true); err != nil || res.Source != "sidecar" || miss.hits.Load() != 1 {
+		t.Fatalf("filecoin miss must fall through: %+v %v", res, err)
+	}
+	if f.skipped(f.Sources[0]) {
+		t.Fatal("a 502 miss must not put the source in connect backoff")
+	}
+}
