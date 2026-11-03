@@ -733,8 +733,13 @@ ipfs-pera. Both seapin faces (`:8880`) already answer like ipfs-2 for a whitelis
 
 **Progress 2026-11-03:** faces Bunny-only via the origin key, UFW 8880 open (operator chose the secret header);
 canary zone `seapin-canary` (6921042, `ipfs-canary.algonode.dev`) live with the geo rules; first checks match
-production. Still to do before the switch: replay of real CIDs/referers/resize query strings from the gateway logs
-against both zones; M5 drill result (2026-11-04 ~16:00 CET).
+production. **Replay 2026-11-03 ~17:10 UTC passed:** 1,500 random distinct GETs from 24 h of `nodely.apilog`
+(api ipfs; same path, query string, referer, UA) against both zones: 1,485 identical outcomes, all 591 successful
+responses byte-identical (types too), canary median 0.21 s / p90 0.47 s vs production 0.24 s / 0.58 s. The 15 others:
+no referer, production answered from Bunny's warm cache, the cold canary asked the face and got the whitelist's 403
+(what ipfs-2 does on a miss; zone 932530 keeps its cache at the switch). Customers resize with `optimizer=image|gif`
++ width/height/quality: identical output on both zones. Geo rule checked: a request with country US went to the US
+face. Remaining before the switch: the M5 drill's 24 h read (2026-11-04 ~16:00 CET).
 
 **Cutover runbook (steps 1-3 applied to the canary; nothing changed on zone 932530):**
 1. Faces reachable by Bunny only: Bunny adds a secret request header (edge rule "set request header", value in the
