@@ -731,7 +731,12 @@ cached original, so any origin works); 30-day cache override, query strings igno
 forwarding on; edge rules: 2 abuse blocks (one CID, `*.htm*` + `*.js`), CORS `*`, randgallery referer blocked on
 ipfs-pera. Both seapin faces (`:8880`) already answer like ipfs-2 for a whitelisted referer and 403 without one.
 
-**Cutover runbook (draft, nothing applied):**
+**Progress 2026-11-03:** faces Bunny-only via the origin key, UFW 8880 open (operator chose the secret header);
+canary zone `seapin-canary` (6921042, `ipfs-canary.algonode.dev`) live with the geo rules; first checks match
+production. Still to do before the switch: replay of real CIDs/referers/resize query strings from the gateway logs
+against both zones; M5 drill result (2026-11-04 ~16:00 CET).
+
+**Cutover runbook (steps 1-3 applied to the canary; nothing changed on zone 932530):**
 1. Faces reachable by Bunny only: Bunny adds a secret request header (edge rule "set request header", value in the
    vault), the faces' openresty answers 403 without it, UFW opens :8880 (Bunny has 585 IPv4 + 321 IPv6 edge IPs that
    change, too many for UFW rules). Same header check on both faces.
