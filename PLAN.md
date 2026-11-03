@@ -720,6 +720,29 @@ type leaking through, and the share of requests that will 404 (unreferenced CIDs
 Exit: the catalog diff between regions stays under 0.1% of CIDs 24 h after the drill.
 
 ### M6: cutover and retirement
+**Schedule (operator 2026-11-03):** M5 drill today (EU ingest stopped 14:53–15:53 UTC, convergence read 24 h later),
+canary 2026-11-04 after the drill passes, production switch ~2026-11-05 on the operator's go. The old gateway stays a
+switch-back target (not an upstream) for 2 weeks, then is retired and rebuilt as the M7 pin nodes.
+
+**Bunny today (read 2026-11-03, `fleet://bunny/api`, read-only):** one pull zone, id 932530, for ipfs.algonode.xyz,
+ipfs.algonode.dev, ipfs-pera.algonode.dev/.xyz; single origin `http://65.21.20.186:80` (htz-hel-ipfs-2 openresty),
+connect 3 s / response 60 s / 1 retry; Optimizer manipulation engine on (customers' image resizing; it resizes the
+cached original, so any origin works); 30-day cache override, query strings ignored, no-referer requests blocked; log
+forwarding on; edge rules: 2 abuse blocks (one CID, `*.htm*` + `*.js`), CORS `*`, randgallery referer blocked on
+ipfs-pera. Both seapin faces (`:8880`) already answer like ipfs-2 for a whitelisted referer and 403 without one.
+
+**Cutover runbook (draft, nothing applied):**
+1. Faces reachable by Bunny only: Bunny adds a secret request header (edge rule "set request header", value in the
+   vault), the faces' openresty answers 403 without it, UFW opens :8880 (Bunny has 585 IPv4 + 321 IPv6 edge IPs that
+   change, too many for UFW rules). Same header check on both faces.
+2. Geo (D6): pull-zone origin = EU face `http://62.83.39.60:8880`; edge rule "override origin" for requests from the
+   Americas (country codes) to the US face `http://159.195.232.249:8880`. A region down: the other face's peer proxy
+   covers misses only, so a whole-region outage is handled by switching that edge rule off (one API call; to script).
+3. Canary: a second pull zone cloned from 932530 (same optimizer, rules, cache settings) with a test hostname, plus
+   replay of the top CIDs/referers from the gateway logs against both zones (status, bytes, content type, resize
+   query strings). Then the production switch: origin URL + the geo rule on zone 932530 (cache stays valid).
+4. Rollback: origin URL back to `http://65.21.20.186:80`, geo rule off (one API call each).
+5. After the switch: `zbx_seapin_preprod.py --off`, watch hit rate and 4xx/5xx per face, Pinata review (D7).
 - [ ] Geo steering with health checks (D6); referer whitelist carried over in openresty (D5); canary on a
       `*-nobunny` hostname first, then full traffic. The old gateway stays ready for a switch back for 2 weeks, but
       is not a fallback upstream (that would reopen D2).
