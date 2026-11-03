@@ -826,6 +826,9 @@ Exit: the old gateway receives no traffic for 2 weeks; fill rate tracked against
 - [ ] Gateway: pinned CIDs served for the tenant's verified sites and its token, from the pin node, through the same
       openresty face; ingest asks the local pin node first, so a pin later burned into an ASA enters the cache in
       seconds.
+- [ ] Portal interface as agreed 2026-11-03 (§5 "Interface with the portal"): `pin.nodely.io` (Cloudflare, WAF on
+      `/portal/*`), pin-quotas v4 pulled from the portal's int6 listener, leaf-file quota, per-org usage counters by type,
+      `indexable` flag with the `pins/images` + `pins/deny` feeds; nft-vectors checks the deny set before every embed.
 - [ ] Usage to ClickHouse (pinned bytes and count per `ld`, daily), read by the portal like `apilog_hourly`
       (**nodely-clickhouse** gate).
 - [ ] Daily pin anti-entropy both ways; unpin + GC; takedown honoured on the pin nodes too.
@@ -1005,6 +1008,107 @@ pinned with us is served by third-party gateways from our node. Needed before la
 regions + 451 in our gateway, the existing takedown table extended to pins), a content-type policy for uploads (P5),
 and abuse contact details in the portal terms.
 
+### Interface with the portal (agreed with the nodely-portal session, 2026-11-03)
+
+The portal's contract docs are the source of truth for the wire shapes: `nodely-portal/docs/seapin-pinning-api.md`
+(the calls) and `docs/pin-quotas-api.md` (the quota feed, v4). Below is what seapin has to implement and the decisions
+behind it.
+
+**Hosts and paths (no tailnet: operator rule of 2026-11-03).** Both directions use the public internet with
+allowlists and bearers. The portal VM is not on the Helsinki VLAN (operator).
+- **`https://pin.nodely.io`** (Cloudflare, proxied; origin UFW admits Cloudflare only), served by the pin API on
+  ipfs-1/2:
+  - `/psa/*`: the IPFS Pinning Service API v1.0.0 (`ipfs pin remote service add nodely https://pin.nodely.io/psa <token>`).
+  - `/pinning/pinFileToIPFS`, `/pinning/pinJSONToIPFS`, `/pinning/unpin/{cid}`: Pinata-compatible uploads.
+  - `/portal/v1/orgs/{org_id}/…`: the portal's API. Bearer `SEAPIN_API_TOKEN` (vault `nodely-portal-seapin-api`),
+    plus a Cloudflare WAF rule that blocks `/portal/*` unless the source is the portal's egress (2.29.135.209,
+    2a01:4f9:c015:63c3::1).
+  - No `/ipfs/` path: content is served only by the shared gateways, with their own rules.
+- **Quota feed:** seapin pulls it from `https://[2a01:4f9:c015:63c3::1]:9443/api/internal/pin-quotas` (the portal's
+  int6 listener):
+  - auth is the bearer `PIN_QUOTA_TOKEN`, and seapin pins the int6 certificate's sha256;
+  - the pullers are ipfs-1 (2a01:4f9:3080:33d3::2) and ipfs-2 (2a01:4f9:3080:4e0c::2), allowlisted per /128 by the portal;
+  - poll every 1–2 min with ETag. On a failed or suspect document (many orgs gone at once), keep the last good copy.
+  - Connection details (nodely-portal 370055f / 31964e7):
+    - URL: `GET https://portal-internal.nodely.local:9443/api/internal/pin-quotas`, with
+      `portal-internal.nodely.local` mapped to 2a01:4f9:c015:63c3::1 (`extra_hosts`).
+    - TLS: a self-signed P-256 certificate; pin the sha256 of its DER:
+      `a661dce9d35bf5729808e4698c2504cbd9920f422c2c19e623b31f79ce071e30` (the same pin 4160mgmt uses).
+    - Token: vault `fleet://nodely-portal-pin-quota`. If that doesn't resolve, the exact item name is in
+      `secrets-bootstrap.sh` `mode_items`.
+    - Allowlist: the two /128s are in the portal's Caddy, hcloud and UFW config, but :9443 admits them only after the
+      next portal deploy and firewall apply.
+
+**Credentials.**
+- **Customers:** an endpoint token created with the pinning scope. seapin looks up `sha256_hex(lowercase(token))`
+  in the org's **`pin_keys`**, never in `keys`, because plain endpoint tokens sit in public front ends. The match
+  gives `ld` and through it the org. Any other token gets 401, on reads as well as writes.
+- **Portal:** one service bearer for `/portal/v1`, compared in constant time. It acts for `{org_id}`.
+- seapin never sees a plaintext token outside a request and stores none.
+
+**Quotas (hard caps, both from the feed).**
+- `quota_bytes` counts DAG bytes.
+- `quota_files` counts **leaf files**: a directory pin counts every file in it (operator, 2026-11-03). Usage reports
+  both `pins` (roots) and `files` (leaves).
+- **One authoritative pin catalog** (Postgres on ipfs-1, streaming replica on ipfs-2 over the VLAN). Quota checks and
+  counter updates are serialised per org (`SELECT … FOR UPDATE` on the org's usage row), so two regions or two
+  concurrent requests cannot double-spend.
+- **Pin by CID:** reserves 1 pin at once. While the DAG is fetched, its bytes and leaves are reserved as they become
+  known, capped at the org's remaining quota. Past the cap the fetch aborts, and the pin ends `failed`,
+  `QUOTA_EXCEEDED`. In-flight reservations count against the quota.
+- **Upload:** refused from `Content-Length` before the body is read.
+- **Org states:**
+  - `suspended` or unlisted: no writes, reads still work, existing pins are kept;
+  - unlisted orgs: seapin's own retention clock starts at the first pull without them, never an immediate delete;
+  - a downgrade below current usage keeps every pin and refuses new ones.
+- **Errors:**
+  - codes `quota_exceeded`, `org_suspended`, `org_unknown`, `endpoint_unknown`, `not_found`, `too_large`,
+    `rate_limited`, `unavailable`;
+  - on `/psa`, the same codes in the spec's `{error:{reason,details}}` shape, upper-cased;
+  - `org_suspended` is 402 on the customer APIs.
+
+**Instant usage by content type.**
+- A counter table `pin_usage(org_id, ld, class) → pins, files, bytes`, updated in the same transaction as every pin
+  state change (pinned, unpinned, failed after a reservation). A nightly recount from the pin records checks it and
+  alerts on drift.
+- Classes are fixed and only grow: `image`, `video`, `audio`, `json`, `text`, `directory`, `other`. They come from
+  seapin's byte sniffing (the D3 allowlist), never from the client's Content-Type. Leaf files count under their own
+  class; a directory root counts as a `directory` pin.
+- The pin record carries `mime`, and `GET /pins` gets a `type` filter.
+- `GET /portal/v1/orgs/{org}/usage` returns totals, `by_type` and `by_endpoint[].by_type` in O(classes). The portal
+  calls it on every page load.
+- Not in v1: a daily snapshot per org and type to ClickHouse for history (seapin emits it; **nodely-clickhouse** gate).
+
+**Indexable flag (image search opt-in).**
+- The portal owns it: `organizations.ipfs_indexable`, default false, org-level only, set by an org admin and audited.
+  It is exported per org in pin-quotas v4 as `indexable` + `indexable_updated_at`. seapin keeps a copy per org.
+- **Only an explicit `true` allows indexing.** Unlisted, suspended and orphaned pins count as no-index.
+- **No-index always wins, including over the cache (operator, 2026-11-03).** This replaces the §6 decision of
+  2026-11-02 that "pinned and chain-referenced stays searchable".
+  - Content is kept out of image search when any pin of it belongs to a no-index org, matched both by CID and by
+    sha256 of the content (the same bytes under another CID).
+  - This holds however the bytes reached nft-vectors: the free cache, an ASA reference, or another org's
+    indexable pin.
+  - nft-vectors already keys vectors by content sha256, with an `images` row per CID. A deny of a hash removes the
+    vector and every CID that maps to it.
+- **Feeds from seapin to nft-vectors** (internal listener, read-only token, since/after watermarks):
+  1. `pins/images`: pinned images of indexable orgs, with CID, sha256, mime and size, for embedding. nft-vectors
+     fetches the bytes from the pin node through seapin, not from the gateway.
+  2. `pins/deny`: CIDs and content hashes that must not be indexed. Rows are added when a no-index org pins
+     something, and when an org's flag goes off (all its pins). Rows are dropped only when the last no-index pin of
+     that content is gone.
+  - nft-vectors checks the deny set **before embedding anything, from any source**, and deletes existing vectors
+    when a deny arrives. Target: out of search within 5 min of the pin or of the flag change.
+  - Flag on: the org's existing pins are backfilled through feed 1.
+- **seapin never copies pin-only content into the cache.** Only chain references enter the cache. When ingest takes
+  a chain-referenced CID from the pin node (§5 Overlap), the deny set still applies to it.
+- Search results show a CID and its assets, never the org that pinned it.
+
+**Portal behaviour (their side, for reference).**
+- The portal polls `GET /pins/{id}` and `/usage`; there are no webhooks in v1.
+- Its pre-check covers only uploads and an already-full quota; seapin has the last word.
+- It keeps `PINNING_LIVE` false until seapin says `/portal/v1` answers.
+
 ### Open decisions (recommendation first)
 
 | # | decision | recommendation | why |
@@ -1059,6 +1163,6 @@ Postgres + pgvector (HNSW).
    worker skips or deletes those vectors.
 
 **Decided (operator, 2026-11-02):** pgvector on ai1; 1024 dimensions (halfvec, HNSW); images that are both pinned and
-chain-referenced **stay** searchable (only pin-only content is out, by construction, so the M7 pin list is not needed
+chain-referenced **stay** searchable (**superseded 2026-11-03:** pins of orgs without the portal's `indexable` flag deny their content in search, including copies in the cache; see §5 "Interface with the portal") (only pin-only content is out, by construction, so the M7 pin list is not needed
 here); the code goes into a **new repo `nft-vectors`** (registered in `_registry`), deployed to ai1 as
 `/home/docker/nft-vectors`. seapin only gains the feed changes (items 1, 2 and 4 above).
