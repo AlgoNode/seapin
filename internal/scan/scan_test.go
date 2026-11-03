@@ -414,3 +414,20 @@ func TestBuildMetaSpellingFromHead(t *testing.T) {
 		t.Fatalf("spelling from head: %s", m.Extra["img"].CID)
 	}
 }
+
+// A web-URL asset (AlgoSeas Pirates on cdn.algoseas.io) produces no ref but is due for the x_asset_meta writer;
+// an asset with no URL, or a destroyed one, is not.
+func TestWebURLAssetDueForMeta(t *testing.T) {
+	s := openScanner(t)
+	refs := s.applyAll(t, contract.SrcLive, ev(21, Create, 200, types.AssetParams{URL: "https://cdn.algoseas.io/pirates/24714.png", AssetName: "Pirate"}, ""),
+		ev(22, Create, 200, types.AssetParams{AssetName: "no url"}, ""))
+	if len(refs) != 0 {
+		t.Fatalf("refs %+v", refs)
+	}
+	var rr21, rr22 *int64
+	s.DB.QueryRow(context.Background(), `SELECT ref_round FROM scan_assets WHERE asset = 21`).Scan(&rr21)
+	s.DB.QueryRow(context.Background(), `SELECT ref_round FROM scan_assets WHERE asset = 22`).Scan(&rr22)
+	if rr21 == nil || *rr21 != 200 || rr22 != nil {
+		t.Fatalf("ref_round web %v, none %v", rr21, rr22)
+	}
+}

@@ -73,6 +73,13 @@ func (s *Scanner) applyEvents(ctx context.Context, tx pgx.Tx, evs []Event, src s
 				c.refRound = &rr
 			}
 		}
+		// A web URL (not IPFS) produces no ref, but the old scanner wrote an
+		// x_asset_meta row for it: due for the compat writer, which records {url}.
+		if len(r) == 0 && !a.destroyed && isWeb(a.url) {
+			if rr := int64(ev.Round); c.refRound == nil || rr > *c.refRound {
+				c.refRound = &rr
+			}
+		}
 		refs = append(refs, r...)
 	}
 	if len(order) == 0 {
