@@ -1,3 +1,4 @@
+-- WITHDRAWN by 0007_drop_blocked_creators.sql (operator 2026-11-03); kept because migrations are tracked by name.
 -- Creators whose references are kept but whose content is never fetched (operator 2026-11-03). Their root CIDs are
 -- recorded as blocked objects, so serve answers 403 at once (cacheable) without asking the peer or starting a
 -- demand fetch, and ingest never queues them (any objects row makes a root "known").

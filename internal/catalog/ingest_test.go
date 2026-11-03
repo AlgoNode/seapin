@@ -280,46 +280,19 @@ func TestRefsBefore(t *testing.T) {
 	}
 }
 
-// A blocked creator's refs are kept, its roots become blocked objects (serve's 403) and nothing is queued, also for a
-// root queued by anti-entropy under SyncCreator; a cached object is never downgraded.
-func TestBlockedCreator(t *testing.T) {
+// 0007 withdrew the creator block list: no table, and every creator's refs are queued and judged by their bytes.
+func TestNoCreatorBlockList(t *testing.T) {
 	c := openTest(t)
 	ctx := context.Background()
 	if err := c.Migrate(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := c.pool.Exec(ctx, `INSERT INTO blocked_creators (creator, reason) VALUES ('DSD', 'signed documents')`); err != nil {
-		t.Fatal(err)
+	var exists bool
+	c.pool.QueryRow(ctx, `SELECT to_regclass('blocked_creators') IS NOT NULL`).Scan(&exists)
+	if exists {
+		t.Fatal("blocked_creators still exists after 0007")
 	}
-	if n, err := c.ApplyRef(ctx, ref(1, "url", "bafy-pdf", "", "DSD", "live", 100)); err != nil || n != 0 {
-		t.Fatalf("blocked creator queued: %d %v", n, err)
-	}
-	o, found, err := c.Lookup(ctx, "bafy-pdf")
-	if err != nil || !found || o.Status != StatusBlocked || o.Reason != "creator_excluded: signed documents" {
-		t.Fatalf("root not blocked: %+v %v %v", o, found, err)
-	}
-	var refs int
-	c.pool.QueryRow(ctx, `SELECT count(*) FROM refs WHERE root_cid = 'bafy-pdf'`).Scan(&refs)
-	if refs != 1 {
-		t.Fatalf("the ref must be kept: %d", refs)
-	}
-	if n, err := c.EnqueueFetch(ctx, "bafy-pdf", "", "sync", time.Now()); err != nil || n != 0 {
-		t.Fatalf("anti-entropy queued a blocked root: %d %v", n, err)
-	}
-	var fetches int
-	c.pool.QueryRow(ctx, `SELECT count(*) FROM fetches WHERE root_cid = 'bafy-pdf'`).Scan(&fetches)
-	if fetches != 0 {
-		t.Fatalf("fetch rows for a blocked root: %d", fetches)
-	}
-	// cached stays cached; other creators are not affected
-	if err := c.MarkCached(ctx, "bafy-json-ok", "application/json", 10, "peer"); err != nil {
-		t.Fatal(err)
-	}
-	c.ApplyRef(ctx, ref(2, "url", "bafy-json-ok", "", "DSD", "live", 100))
-	if o, _, _ := c.Lookup(ctx, "bafy-json-ok"); o.Status != StatusCached {
-		t.Fatalf("cached object downgraded: %+v", o)
-	}
-	if n, err := c.ApplyRef(ctx, ref(3, "url", "bafy-art", "", "ARTIST", "live", 100)); err != nil || n != 1 {
-		t.Fatalf("other creator: %d %v", n, err)
+	if n, err := c.ApplyRef(ctx, ref(1, "url", "bafy-doc", "", "YKK3HOD3T2FFWLBRXZUTQHLAZBXGS2CK73U3NSBQOOVEUL2HU7GV7YFOAE", "live", 100)); err != nil || n != 1 {
+		t.Fatalf("ref not queued: %d %v", n, err)
 	}
 }
