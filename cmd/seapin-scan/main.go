@@ -101,9 +101,10 @@ func run(ctx context.Context, log *slog.Logger, mode string, dryRun bool) error 
 			return err
 		}
 		defer target.Close()
-		mw := &scan.MetaWriter{DB: db, Target: target, Chain: cfg.Chain, SeapinURL: cfg.SeapinURL,
+		mw := &scan.MetaWriter{DB: db, Target: target, Table: cfg.MetaTable, Chain: cfg.Chain, SeapinURL: cfg.SeapinURL,
 			Token: cfg.SeapinToken, Client: &http.Client{Timeout: 30 * time.Second}, Log: log}
 		mw.Register(reg)
+		log.Info("x_asset_meta compat writer on", "table", cfg.MetaTable)
 		wg.Go(func() { mw.Run(ctx) })
 	}
 

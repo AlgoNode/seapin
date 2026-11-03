@@ -262,3 +262,12 @@ func TestApplyBinaryText(t *testing.T) {
 		t.Errorf("name %q unit %v", name, unit)
 	}
 }
+
+func TestMetaTable(t *testing.T) {
+	for in, want := range map[string]string{"": "x_asset_meta", "x_asset_meta": `"x_asset_meta"`,
+		"seapin_shadow.x_asset_meta": `"seapin_shadow"."x_asset_meta"`} {
+		if got := (&MetaWriter{Table: in}).table(); got != want {
+			t.Errorf("%q: %s, want %s", in, got, want)
+		}
+	}
+}

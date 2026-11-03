@@ -22,6 +22,7 @@ import (
 type MetaWriter struct {
 	DB        *pgxpool.Pool // scanner state
 	Target    *pgxpool.Pool // the database holding x_asset_meta
+	Table     string        // target table, [schema.]name; "" = x_asset_meta (a shadow copy for a parallel run)
 	Chain     string
 	SeapinURL string // seapin's internal listener
 	Token     string
@@ -121,7 +122,7 @@ func (m *MetaWriter) one(ctx context.Context, a dueAsset) error {
 		return err
 	}
 	if _, err := m.Target.Exec(ctx, `
-		INSERT INTO x_asset_meta (asset, meta, updated_at, cached_at) VALUES ($1, $2, now(), now())
+		INSERT INTO `+m.table()+` (asset, meta, updated_at, cached_at) VALUES ($1, $2, now(), now())
 		ON CONFLICT (asset) DO UPDATE SET meta = EXCLUDED.meta, updated_at = now(), cached_at = now()`,
 		a.id, meta); err != nil {
 		return err
@@ -131,6 +132,14 @@ func (m *MetaWriter) one(ctx context.Context, a dueAsset) error {
 		UPDATE scan_assets SET meta_round = $3, meta_tries = 0, meta_next_at = NULL
 		WHERE chain = $1 AND asset = $2`, m.Chain, a.id, a.refRound)
 	return err
+}
+
+// table is the quoted target table (config.LoadScan validates META_TABLE).
+func (m *MetaWriter) table() string {
+	if m.Table == "" {
+		return "x_asset_meta"
+	}
+	return pgx.Identifier(strings.Split(m.Table, ".")).Sanitize()
 }
 
 // later retries an asset with backoff: 30 s, 1 min, 2 min, … up to 1 h.

@@ -4,6 +4,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -232,6 +233,7 @@ type Scan struct {
 	MaxRefsPerSec  int
 	MaxLiveLag     uint64
 	MetaDSN        string // database with x_asset_meta; empty = compat writer off
+	MetaTable      string // META_TABLE: [schema.]table to write, default x_asset_meta (a shadow copy for a parallel run)
 	SeapinURL      string // seapin's internal listener, for the compat writer
 	SeapinToken    string
 	Addr           string // /health and /metrics
@@ -256,12 +258,16 @@ func LoadScan() (Scan, error) {
 		MaxRefsPerSec:  p.int("BACKFILL_MAX_REFS_PER_SEC", 200),
 		MaxLiveLag:     uint64(p.int("MAX_LIVE_LAG", 10)),
 		MetaDSN:        os.Getenv("META_PG_DSN"),
+		MetaTable:      envOr("META_TABLE", "x_asset_meta"),
 		SeapinURL:      os.Getenv("SEAPIN_INTERNAL_URL"),
 		SeapinToken:    os.Getenv("SEAPIN_INTERNAL_TOKEN"),
 		Addr:           envOr("SCAN_ADDR", "127.0.0.1:8093"),
 	}
 	if s.BlocksURL == "" {
 		s.BlocksURL, s.BlocksToken, s.BlocksReferer = s.AlgodURL, s.AlgodToken, s.AlgodReferer
+	}
+	if !metaTableRe.MatchString(s.MetaTable) {
+		p.errs = append(p.errs, "META_TABLE must be [schema.]table in lower case letters, digits and _")
 	}
 	if s.MetaDSN != "" && (s.SeapinURL == "" || s.SeapinToken == "") {
 		p.errs = append(p.errs, "META_PG_DSN needs SEAPIN_INTERNAL_URL and SEAPIN_INTERNAL_TOKEN")
@@ -271,3 +277,5 @@ func LoadScan() (Scan, error) {
 	}
 	return s, p.err()
 }
+
+var metaTableRe = regexp.MustCompile(`^[a-z_][a-z0-9_]*(\.[a-z_][a-z0-9_]*)?$`)
