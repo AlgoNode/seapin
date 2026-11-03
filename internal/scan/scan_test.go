@@ -3,6 +3,7 @@ package scan
 import (
 	"context"
 	"fmt"
+	"github.com/prometheus/client_golang/prometheus/testutil"
 	"io"
 	"log/slog"
 	"os"
@@ -429,5 +430,11 @@ func TestWebURLAssetDueForMeta(t *testing.T) {
 	s.DB.QueryRow(context.Background(), `SELECT ref_round FROM scan_assets WHERE asset = 22`).Scan(&rr22)
 	if rr21 == nil || *rr21 != 200 || rr22 != nil {
 		t.Fatalf("ref_round web %v, none %v", rr21, rr22)
+	}
+	mw := &MetaWriter{DB: s.DB, Chain: s.Chain}
+	mw.Register(prometheus.NewRegistry())
+	mw.countDue(context.Background())
+	if got := testutil.ToFloat64(mw.due); got != 1 {
+		t.Fatalf("due gauge %v, want 1 (asset 21)", got)
 	}
 }

@@ -33,7 +33,9 @@ type MetaWriter struct {
 	Client    *http.Client
 	Log       *slog.Logger
 
-	written prometheus.Counter
+	written   prometheus.Counter
+	writeErrs prometheus.Counter
+	due       prometheus.Gauge
 }
 
 const maxMetaTries = 8
@@ -42,13 +44,22 @@ func (m *MetaWriter) Register(reg prometheus.Registerer) {
 	m.written = prometheus.NewCounter(prometheus.CounterOpts{
 		Name: "seapin_scan_meta_written_total", Help: "x_asset_meta rows written.",
 	})
-	reg.MustRegister(m.written)
+	m.writeErrs = prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "seapin_scan_meta_write_errors_total", Help: "x_asset_meta writes the target database refused or did not answer.",
+	})
+	m.due = prometheus.NewGauge(prometheus.GaugeOpts{
+		Name: "seapin_scan_meta_due", Help: "Assets waiting for an x_asset_meta write (refs newer than the last write).",
+	})
+	reg.MustRegister(m.written, m.writeErrs, m.due)
 }
 
 func (m *MetaWriter) Run(ctx context.Context) {
 	tick := time.NewTicker(5 * time.Second)
 	defer tick.Stop()
-	for {
+	for n := 0; ; n++ {
+		if n%12 == 0 { // once a minute; the partial index scan_assets_meta_due keeps it cheap
+			m.countDue(ctx)
+		}
 		if err := m.pass(ctx); err != nil && ctx.Err() == nil {
 			m.Log.Warn("x_asset_meta pass", "err", err)
 		}
@@ -57,6 +68,18 @@ func (m *MetaWriter) Run(ctx context.Context) {
 			return
 		case <-tick.C:
 		}
+	}
+}
+
+func (m *MetaWriter) countDue(ctx context.Context) {
+	if m.due == nil {
+		return
+	}
+	var n int64
+	if err := m.DB.QueryRow(ctx, `
+		SELECT count(*) FROM scan_assets
+		WHERE chain = $1 AND ref_round IS NOT NULL AND meta_round IS DISTINCT FROM ref_round`, m.Chain).Scan(&n); err == nil {
+		m.due.Set(float64(n))
 	}
 }
 
@@ -130,9 +153,14 @@ func (m *MetaWriter) one(ctx context.Context, a dueAsset) error {
 		INSERT INTO `+m.table()+` (asset, meta, updated_at, cached_at) VALUES ($1, $2, now(), now())
 		ON CONFLICT (asset) DO UPDATE SET meta = EXCLUDED.meta, updated_at = now(), cached_at = now()`,
 		a.id, meta); err != nil {
+		if m.writeErrs != nil {
+			m.writeErrs.Inc()
+		}
 		return err
 	}
-	m.written.Inc()
+	if m.written != nil {
+		m.written.Inc()
+	}
 	_, err = m.DB.Exec(ctx, `
 		UPDATE scan_assets SET meta_round = $3, meta_tries = 0, meta_next_at = NULL
 		WHERE chain = $1 AND asset = $2`, m.Chain, a.id, a.refRound)
