@@ -798,6 +798,12 @@ face. Remaining before the switch: the M5 drill's 24 h read (2026-11-04 ~16:00 C
 - [x] Disk: no resize needed (operator 2026-11-02). New chain content is ~1,000 objects / ~60 MB a day (assets
       configured in the last 24 h); both volumes end near 61% after the destroyed-asset import, 70% is years away.
 - [ ] Pinata review (D7): keep it only if it delivered objects the IPFS network couldn't.
+      - **Data 2026-11-03 21:30 UTC** (source `pinata` since 2026-11-02, slow/backfill retries only, last in the chain):
+        910 distinct objects, 4.57 GB over both regions (EU 311 / 783 MB, US 616 / 3.6 GB; 466 png, 339 json, 49 webp,
+        26 jpeg, 13 mp4, 9 glb). Routing check of 80 of them (delegated-ipfs.dev): 27 advertised by Pinata only (~34%
+        → ~310 objects, ~1.5 GB nothing else would deliver), 45 by other bitswap peers (rainbow missed them within its
+        deadline), 7 also at the Filecoin SP (the new `filecoin` source covers those), 4 by nobody. Its share of all
+        fetched objects is small (~0.02%), but a third of it is Pinata-only content. Operator decision pending.
 - [x] Runbook for going past 8 TB written down (a second volume as an extra `-dir`, or a second volume server):
       algoup `deploy/seapin/README.md`, "Disk: growing the volume, and past 8 TB" (2026-11-02; the two-`-dir` setup
       tested 2026-11-02 with the production SeaweedFS image).
