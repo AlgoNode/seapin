@@ -571,8 +571,14 @@ Found while building M2:
 - [x] `x_asset_meta` compat writer: polls `/internal/assets` for assets with new refs, waits up to ~2 h for
       pending objects, then writes the old JSON shape (`id, an, un, r, url, rnd, extra.{json,img,vid,aud,oth}`).
       — 2026-10-30
-- [ ] Runs beside algoipfssvc, which keeps writing `x_asset_meta` until the compat writer is verified (deploy, M4).
+- [x] Runs beside algoipfssvc, which keeps writing `x_asset_meta` until the compat writer is verified (deploy, M4).
       At M6 algoipfssvc, its `static` worker and Redis are retired.
+      - **Switched 2026-11-03 18:14 UTC** (operator): parallel run on `seapin_shadow.x_asset_meta` from 17:28 UTC,
+        1,086-asset comparison with svc-asset's rows clean after images -5..-8 (CID/path spelling as the asset wrote it,
+        the old scanner's links decide, ARC-3 type from the JSON's first 10 KiB, refused objects and web links as {url}),
+        -9 (web-URL assets due). Role `seapin_meta` writes `public.x_asset_meta`; svc-asset's db worker off. svc-asset
+        reads the `mainnet` vhost's `public.hdr.tx`; seapin-scan reads blocks itself and the writer uses no RabbitMQ, so
+        svc-asset's queues must be deleted when it is decommissioned (algoup deploy/seapin README log).
 
 Exit status 2026-10-30:
 - Offline:
