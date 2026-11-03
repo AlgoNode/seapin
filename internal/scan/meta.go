@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/url"
+	"slices"
 	"strings"
 	"time"
 
@@ -197,11 +199,14 @@ type assetMeta struct {
 	Extra    map[string]*metaObject `json:"extra,omitempty"`
 }
 
-// buildMeta keeps the first object of each media class, in key order (the
-// URL's own object first), as the old scanner did: cached ones, and ones the
-// policy refused, under their detected type (the old scanner recorded those
-// too, e.g. text/plain under oth). CIDs keep the spelling the asset used: seapin
-// normalises to CIDv1, the old rows hold what the URL or the JSON said (v0 Qm…).
+// buildMeta keeps one object per media class as the old scanner did: links in
+// its order (the asset URL, then the JSON's image, animation_url,
+// properties.file_url), a later one replacing an earlier one of the same class
+// (its ASAextra held one object per class). Cached objects and ones the policy
+// refused count, the latter under their detected type (the old scanner recorded
+// those too, e.g. text/plain under oth). CIDs and paths keep the spelling the
+// asset used: seapin normalises to CIDv1 and unescaped paths, the old rows hold
+// what the URL or the JSON said (v0 Qm…, %20) or what an ARC-19 template asked for.
 func buildMeta(a dueAsset, objs []resolvedObject) assetMeta {
 	written := []string{a.url}
 	for _, o := range objs {
@@ -209,6 +214,9 @@ func buildMeta(a dueAsset, objs []resolvedObject) assetMeta {
 			written = append(written, string(o.Content))
 		}
 	}
+	v0Template := strings.Contains(a.url, "{ipfscid:0:")
+	objs = slices.Clone(objs)
+	slices.SortStableFunc(objs, func(x, y resolvedObject) int { return linkOrder(x.Key) - linkOrder(y.Key) })
 	m := assetMeta{ID: a.id, Name: a.name, UnitName: a.unit, URL: a.url, Round: a.refRound, Extra: map[string]*metaObject{}}
 	if len(a.reserve) == 32 {
 		m.Reserve = types.Address(a.reserve).String()
@@ -218,12 +226,13 @@ func buildMeta(a dueAsset, objs []resolvedObject) assetMeta {
 			continue
 		}
 		class := mediaClass(o.Mime)
-		if m.Extra[class] != nil {
-			continue
+		w := written
+		if v0Template && strings.HasSuffix(o.Key, "/url") {
+			w = append(w, v0Of(o.Root)) // the template's own CID is v0
 		}
-		cid := spelled(o.Root, written)
+		cid := spelled(o.Root, w)
 		if o.Subpath != "" {
-			cid += "/" + o.Subpath
+			cid += "/" + spelledPath(cid, o.Subpath, written)
 		}
 		mo := &metaObject{MimeType: o.Mime, Bytes: o.Size, CID: cid, Content: o.Content}
 		if o.Status == "blocked" {
@@ -330,6 +339,53 @@ func classByExt(u string) string {
 	return ""
 }
 
+// linkOrder ranks an object by the old scanner's order of links: the asset URL's
+// own object, then image, animation_url, properties.file_url (a later one wins).
+func linkOrder(key string) int {
+	switch {
+	case strings.HasSuffix(key, "/url"):
+		return 0
+	case strings.HasSuffix(key, "/image"):
+		return 1
+	case strings.HasSuffix(key, "/animation_url"):
+		return 2
+	case strings.HasSuffix(key, "/properties/file_url"):
+		return 3
+	}
+	return 1
+}
+
+// spelledPath returns the subpath escaped as the asset wrote it after root
+// (ZombiePuddin%20%23321.png), else as seapin holds it.
+func spelledPath(root, sub string, written []string) string {
+	segs := strings.Split(sub, "/")
+	for i, s := range segs {
+		segs[i] = url.PathEscape(s)
+	}
+	esc := strings.Join(segs, "/")
+	if esc == sub {
+		return sub
+	}
+	for _, w := range written {
+		if strings.Contains(w, root+"/"+esc) {
+			return esc
+		}
+	}
+	return sub
+}
+
+// v0Of is norm's CIDv0 form, or "" when it has none.
+func v0Of(norm string) string {
+	c, err := cid.Decode(norm)
+	if err != nil || c.Type() != cid.DagProtobuf {
+		return ""
+	}
+	if dec, err := mh.Decode(c.Hash()); err != nil || dec.Code != mh.SHA2_256 || dec.Length != 32 {
+		return ""
+	}
+	return cid.NewCidV0(c.Hash()).String()
+}
+
 // spelled returns norm as the asset wrote it: the CIDv0 form when norm is a
 // dag-pb sha2-256 CIDv1 whose v0 string appears in the asset's URL or JSON,
 // else norm.
@@ -344,6 +400,9 @@ func spelled(norm string, written []string) string {
 	}
 	v0 := cid.NewCidV0(c.Hash()).String()
 	for _, w := range written {
+		if w == "" {
+			continue
+		}
 		if strings.Contains(w, v0) {
 			return v0
 		}

@@ -238,7 +238,8 @@ func TestBuildMeta(t *testing.T) {
 	r := address(3)
 	m := buildMeta(dueAsset{id: 1, name: "N", url: "ipfs://bafyjson", reserve: r[:], refRound: 9}, objs)
 	// a refused object is recorded under its detected type, without content, as the old scanner did
-	if m.Extra["json"].Type != "ARC-3" || m.Extra["img"].CID != "bafypng" || m.Reserve != r.String() ||
+	// properties.file_url replaces image (the old scanner's last-wins per class)
+	if m.Extra["json"].Type != "ARC-3" || m.Extra["img"].CID != "bafydir/1.png" || m.Reserve != r.String() ||
 		m.Extra["oth"] == nil || m.Extra["oth"].MimeType != "text/html" || m.Extra["oth"].Content != nil {
 		t.Errorf("meta %+v json %+v img %+v oth %+v", m, m.Extra["json"], m.Extra["img"], m.Extra["oth"])
 	}
@@ -318,4 +319,39 @@ func TestBuildMetaWebLinks(t *testing.T) {
 	if m.Extra["img"].CID != "bafypng" || m.Extra["img"].URL != "" {
 		t.Fatalf("ipfs wins: %+v", m.Extra["img"])
 	}
+}
+
+// Real cases from the 2026-11-03 shadow comparison with svc-asset's rows.
+func TestBuildMetaOldSpelling(t *testing.T) {
+	// ARC-19 template asking for CIDv0 (asset 834758353)
+	v1, v0 := "bafybeidsmpp3owdjyzahbqms73lhim6tuds634chms2kik47hb7nmuukti", "QmW3BWtGqqZFryNYS1AjmdMbAyC97qxvD1GPa2eAxTkofF"
+	m := buildMeta(dueAsset{id: 834758353, url: "template-ipfs://{ipfscid:0:dag-pb:reserve:sha2-256}"}, []resolvedObject{
+		{Key: "mainnet-v1.0/834758353/url", Root: v1, Status: "cached", Mime: "image/png", Size: 997406}})
+	if m.Extra["img"].CID != v0 {
+		t.Fatalf("template v0: %s", m.Extra["img"].CID)
+	}
+	// a path the URL wrote escaped (asset 492041505)
+	qm := "QmeUnbHicJkXCTBvD6H6ZYYEzKzumiC15pN67ADpCtpVsT"
+	m = buildMeta(dueAsset{id: 492041505, url: "ipfs://" + qm + "/ZombiePuddin%20%23321.png"}, []resolvedObject{
+		{Key: "mainnet-v1.0/492041505/url", Root: v1of(t, qm), Subpath: "ZombiePuddin #321.png", Status: "cached", Mime: "image/png"}})
+	if m.Extra["img"].CID != qm+"/ZombiePuddin%20%23321.png" {
+		t.Fatalf("escaped path: %s", m.Extra["img"].CID)
+	}
+	// image and properties.file_url both images: file_url wins (asset 1804172142)
+	m = buildMeta(dueAsset{id: 1804172142, url: "ipfs://bafkreijson#arc3"}, []resolvedObject{
+		{Key: "mainnet-v1.0/1804172142/url", Root: "bafkreijson", Status: "cached", Mime: "application/json"},
+		{Key: "mainnet-v1.0/1804172142/url/image", Root: "bafybeiimage", Status: "cached", Mime: "image/png"},
+		{Key: "mainnet-v1.0/1804172142/url/properties/file_url", Root: "bafkreifile", Status: "cached", Mime: "image/png"}})
+	if m.Extra["img"].CID != "bafkreifile" {
+		t.Fatalf("last wins: %s", m.Extra["img"].CID)
+	}
+}
+
+func v1of(t *testing.T, v0 string) string {
+	t.Helper()
+	c, err := cid.Decode(v0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return cid.NewCidV1(c.Type(), c.Hash()).String()
 }
