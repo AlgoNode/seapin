@@ -57,6 +57,10 @@ type Ingest struct {
 	// FilecoinURL: optional, slow lanes only, before the sidecar: a rainbow in remote-backend mode over a Filecoin
 	// storage provider's HTTP retrieval (blocks verified there), for CIDs gone from bitswap (2026-11-03).
 	FilecoinURL string
+	// FilebaseURL: optional, slow lanes only, after the sidecar: a rainbow in remote-backend CAR mode over
+	// Filebase's public trustless gateway (ipfs.filebase.io; every block verified there), for CIDs that no
+	// other source serves (2026-11-04: 4 of 20 sampled backfill misses).
+	FilebaseURL string
 	PinataURL   string // optional last source, slow lanes only
 	PinataToken string
 
@@ -86,6 +90,7 @@ func LoadIngest() (Config, Ingest, error) {
 		SyncInterval: p.dur("SYNC_INTERVAL", 24*time.Hour),
 		SyncPage:     p.int("SYNC_PAGE", 2000),
 		FilecoinURL:  os.Getenv("FILECOIN_URL"),
+		FilebaseURL:  os.Getenv("FILEBASE_URL"),
 		PinataURL:    os.Getenv("PINATA_URL"),
 		PinataToken:  os.Getenv("PINATA_TOKEN"),
 

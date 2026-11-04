@@ -76,6 +76,11 @@ func runIngest(ctx context.Context, log *slog.Logger) error {
 		sources = append(sources, fetch.Source{Name: "filecoin", BaseURL: ing.FilecoinURL, SlowOnly: true, MissOK: true})
 	}
 	sources = append(sources, fetch.Source{Name: "sidecar", BaseURL: ing.SidecarURL})
+	if ing.FilebaseURL != "" {
+		// After the sidecar: Filebase's gateway looks a CID up on its own when it does not hold it, so a miss can
+		// take as long as the retrieval timeout of the rainbow in front of it.
+		sources = append(sources, fetch.Source{Name: "filebase", BaseURL: ing.FilebaseURL, SlowOnly: true, MissOK: true})
+	}
 	if ing.PinataURL != "" {
 		sources = append(sources, fetch.Source{
 			Name: "pinata", BaseURL: ing.PinataURL, SlowOnly: true,
