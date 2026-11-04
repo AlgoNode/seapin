@@ -670,7 +670,7 @@ Both reach ssh only through 4160mgmt. Each has a 3 TB netcup block device `vdb` 
           public IP, nginx admits only the two region hosts, UFW allows + deny-rest, `only-if-cached` forced
           (kubo: miss 412 in < 1 ms)
         - image `seapin:20261031-1`: LEGACY_URL lists both hosts, because their caches differ
-- [~] Zabbix (health, disk 70/85 %, queue depth, ingest errors, projected date for 8 TB) ✓; apilog onboarding; deploy
+- [x] Zabbix (health, disk 70/85 %, queue depth, ingest errors, projected date for 8 TB) ✓; apilog onboarding ✓ (late, see below); deploy
       record; registry deploy row.
       - **Zabbix linked to net-de-nur-ipfs since 2026-10-31 00:31 UTC.** algoup `tools/zabbix/zbx_seapin.py` builds
         two templates, both read through the host's agent2 on 127.0.0.1:
@@ -680,7 +680,10 @@ Both reach ssh only through 4160mgmt. Each has a 3 TB netcup block device `vdb` 
         - 55 of 59 items have values and none are unsupported (the 4 without are history-0 raw pages)
         - the two triggers that fired spuriously right after linking are guarded (`233f547`, apply pending)
       - Deploy record and registry row: done for each rollout.
-      - Still open: apilog onboarding, with the public face.
+      - **apilog onboarding: done 2026-11-04 ~18:00 UTC (19:00 CET), late.** The switch (17:11 CET) ran without it, so the
+        faces' origin log missed Graylog and `nodely.apilog` for ~1 h 45 min (Bunny's `bcdn` edge log continued). Since
+        then: fluent-bit per host (algoup `deploy/seapin/fbit`, `rollout.sh <region> fbit`), and both sinks are equal.
+        `bunny_switch.py apply` now refuses to run unless both faces use the fluentd driver.
       - The seed brings the referenced set (1.88 TB, M0) onto the 3 TB volume (3.1 TiB): about 55–60 % used, near the
         70 % grow trigger.
 - [~] Resize drill: grow the volume a little online, run `xfs_growfs`, confirm SeaweedFS reports more free slots
