@@ -833,7 +833,7 @@ face. Remaining before the switch: the M5 drill's 24 h read (2026-11-04 ~16:00 C
 
 Exit: the old gateway receives no traffic for 2 weeks; fill rate tracked against the 70% grow trigger.
 
-### M7: pinning service for the Boost / Unlimited tiers (research 2026-11-01, see §5) — **parked by the operator 2026-11-02** until seapin is in production
+### M7: pinning service for the Boost / Unlimited tiers (research 2026-11-01, see §5) — **started 2026-11-04** (operator go after the M6 cutover; P6 and P7 decided)
 - [ ] Operator decisions P1–P8 (§5 Open decisions).
 - [ ] Portal: `features.ipfsPinning`, `limits.pinBytes` / `limits.pinCount` in `TIER_FEATURES` / `TIER_LIMITS`, the
       edge-config feed gains them (add fields, never rename), a pin page per endpoint (list, add by CID, upload,
@@ -1140,8 +1140,8 @@ allowlists and bearers. The portal VM is not on the Helsinki VLAN (operator).
 | P3 | Where pin nodes run | **decided 2026-11-01: htz-hel-ipfs-1 and htz-hel-ipfs-2, a fresh kubo after M6** | 32 cores, 125 GB, 7 TB NVMe each, VLAN between them; both in Helsinki (no site redundancy) |
 | P4 | Quotas per tier | Boost: small (e.g. 5 GB / 1,000 pins), Unlimited: large with fair use; upload cap per request | pricing is the operator's; quotas go into `TIER_LIMITS` |
 | P5 | Content policy for pins | **decided 2026-11-02: allowlist only** (the D3 types; anything else refused at pin time) | the same policy as the cache, in the API, the gateway and the pin nodes |
-| P6 | Provide strategy | `pinned+entities` with the sweep provider | ~1 record per file instead of per 256 KiB chunk |
-| P7 | Pin/cache overlap | A (keep the copy), measure, revisit B if overlap > ~20% of pinned bytes | keeps the free cache independent of paid lifecycle |
+| P6 | Provide strategy | **decided 2026-11-04: `pinned+entities` with the sweep provider** | ~1 record per file instead of per 256 KiB chunk |
+| P7 | Pin/cache overlap | **decided 2026-11-04: A** (keep the copy), measure, revisit B if overlap > ~20% of pinned bytes | keeps the free cache independent of paid lifecycle |
 | P8 (open: operator asks to define the pinning service's shape first) | Boost and the gateway | pins of Boost endpoints served through the gateway only for their own verified sites and token | Boost has no `ipfsGateway` today; pins without a way to read them back over HTTP would be odd |
 
 ## 6. Image vectors and semantic image search (research, 2026-11-02)
