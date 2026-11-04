@@ -729,6 +729,25 @@ type leaking through, and the share of requests that will 404 (unreferenced CIDs
 Exit: the catalog diff between regions stays under 0.1% of CIDs 24 h after the drill.
 
 ### M6: cutover and retirement
+**Status 2026-11-04 (cutover done):** the public gateway runs on seapin.
+- **Bunny:** pull zone **6928561** (`9211e9e3-9.b-cdn.net`), linked to the monitored, geo-routed record set
+  `ipfs-geo.algonode.xyz` (EU 62.83.39.60, US 159.195.232.249, HTTP monitor on :80 = `health80`), so Bunny fails over
+  between the regions by itself (drain-tested).
+- **Hostnames:** `ipfs.algonode.xyz` (Pull Zone record), `ipfs.algonode.dev`, `ipfs-pera.algonode.dev`,
+  `ipfs-pera.algonode.xyz` (508 on Bunny's side, support ticket).
+- **Zone settings:** copied from the old zone 932530, which is deleted. `bunny_switch.py diff` shows 0 unexpected
+  differences.
+- **Outages on the day:**
+  - ~2 min at 17:04 CET (first origin change);
+  - ~1 h 10 min, 18:00–19:08 CET: origin pointed at its own hostname, then the zone was rebuilt.
+- **Faces' access log:** in Graylog and `nodely.apilog` since ~19:00 CET (late; gap recorded under M4).
+- **Details:** algoup `deploy/seapin/RETIRE-LEGACY.md` "Final state 2026-11-04"; recipe in skill nodely-expose
+  `bunny-geo-failover.md`.
+- **Next:**
+  - move Bunny's log forwarding off ipfs-1;
+  - retire the old gateway ~19 Nov (`bunny_switch.py rollback` targets it until then);
+  - M7.
+
 **Schedule (operator 2026-11-03):** M5 drill today (EU ingest stopped 14:53–15:53 UTC, convergence read 24 h later),
 canary 2026-11-04 after the drill passes, production switch ~2026-11-05 on the operator's go. The old gateway stays a
 switch-back target (not an upstream) for 2 weeks, then is retired and rebuilt as the M7 pin nodes.
